@@ -1,7 +1,7 @@
 # src/run.py
 import argparse
 from .models_io import load_models
-from .pipeline import VideoPipeline, load_models
+from .pipeline import VideoPipeline
 from . import strategies
 from .config import VIDEOS_DIR, RESULTS_DIR
 
@@ -60,7 +60,7 @@ parser.add_argument(
 )
 TO RUN
 
-python -m src.run
+python -m src.sam2_yolo.run
 
 or
 

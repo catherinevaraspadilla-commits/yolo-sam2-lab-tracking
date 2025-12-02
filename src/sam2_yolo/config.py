@@ -1,6 +1,7 @@
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
+print(ROOT)
 
 DATA_DIR = ROOT / "data"
 VIDEOS_DIR = DATA_DIR / "videos"
