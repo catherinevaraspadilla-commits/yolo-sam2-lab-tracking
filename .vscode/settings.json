@@ -1,0 +1,5 @@
+{
+    "python.analysis.extraPaths": [
+        "external/segment-anything-2"
+    ]
+}

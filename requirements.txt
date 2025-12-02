@@ -1,0 +1,22 @@
+# --- Core scientific stack ---
+numpy
+opencv-python
+matplotlib
+Pillow
+scipy
+
+# --- Machine Learning / Deep Learning ---
+torch
+torchvision
+torchaudio
+
+# --- YOLOv8 ---
+ultralytics
+
+# SAM2 repo local (editable install)
+-e ./external/segment-anything-2
+hydra-core
+
+# --- Utilities ---
+ipython
+notebook
