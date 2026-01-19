@@ -13,6 +13,10 @@ All intermediate artifacts go to bunya/close_contact/.
 Final extracted frames go to frames/.
 """
 
+"""
+SAM3 (segmentation) + YOLO (body parts) for close-contact analysis (counting, duration, type) for lab rats.
+"""
+
 from __future__ import annotations
 
 import argparse
