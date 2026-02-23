@@ -1,0 +1,95 @@
+# ============================================================================
+# HPC Full Run Configuration (UQ Bunya)
+# ============================================================================
+# Use this config for full-length video processing on Bunya GPU nodes.
+# Expects CUDA-capable GPU and sufficient memory for large SAM2 model.
+#
+# Usage (via Slurm):
+#   sbatch slurm/run_infer.sbatch
+#
+# Usage (interactive):
+#   python -m src.pipelines.sam2_yolo.run --config configs/hpc_full.yaml
+#   python scripts/extract_frames.py all --config configs/hpc_full.yaml
+# ============================================================================
+
+# --- Input video ---
+video_path: data/raw/output-10s.mp4
+
+# --- Output ---
+output_dir: outputs/runs
+
+# --- Models ---
+models:
+  yolo_path: models/yolo/yolov8lrata.pt
+
+  # SAM2 checkpoint — available sizes:
+  #   sam2.1_hiera_tiny.pt    (~39 MB, fastest, good for local tests)
+  #   sam2.1_hiera_small.pt   (~46 MB)
+  #   sam2.1_hiera_base_plus.pt (~81 MB)
+  #   sam2.1_hiera_large.pt   (~225 MB, best quality, use on HPC)
+  sam2_checkpoint: models/sam2/segment-anything-2/checkpoints/sam2.1_hiera_large.pt
+
+  # SAM2 Hydra config — must match the checkpoint size:
+  #   configs/sam2.1/sam2.1_hiera_t.yaml   (tiny)
+  #   configs/sam2.1/sam2.1_hiera_s.yaml   (small)
+  #   configs/sam2.1/sam2.1_hiera_b+.yaml  (base_plus)
+  #   configs/sam2.1/sam2.1_hiera_l.yaml   (large)
+  sam2_config: configs/sam2.1/sam2.1_hiera_l.yaml
+
+  # Device: "cuda" for HPC GPU nodes
+  device: cuda
+
+# --- Detection (YOLO) ---
+detection:
+  confidence: 0.25
+  max_animals: 2
+
+# --- Segmentation (SAM2) ---
+segmentation:
+  sam_threshold: 0.0
+  mask_iou_threshold: 0.5
+
+# --- Closeness analysis ---
+closeness:
+  distance_threshold_norm: 0.15
+  iou_threshold: 0.1
+
+# --- Encounter grouping ---
+encounters:
+  max_gap_seconds: 2.0
+  min_duration_seconds: 0.5
+
+# --- Frame sampling ---
+sampling:
+  target_total_frames: 200
+  min_per_encounter: 10
+
+# --- Export ---
+export:
+  filename_prefix: rat_close
+  output_dir: null
+
+# --- Tracking ---
+tracking:
+  strategy: tracking
+  max_centroid_distance: 150.0
+
+# --- Video output ---
+output:
+  # "XVID" -> .avi (universal), "avc1" -> .mp4 (needs OpenH264)
+  video_codec: XVID
+  overlay_colors:
+    - [0, 255, 0, 150]
+    - [255, 0, 0, 150]
+
+# --- Scan limits ---
+scan:
+  # null = process the entire video (all ~30,000 frames for 20min @ 25fps)
+  max_frames: null
+
+# --- Roboflow ---
+roboflow:
+  workspace: modelos-yolo
+  project: pruebasratslabs-c02t9
+  split: train
+  batch_name: null

@@ -1,2 +1,43 @@
-external/
+# --- Python ---
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# --- Virtual environment ---
+.venv/
+venv/
+env/
+
+# --- IDE ---
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# --- Data (large files, not committed) ---
+data/raw/
 data/videos/
+data/roboflow_export/
+
+# --- Models (large weights, not committed) ---
+models/yolo/*.pt
+models/sam2/
+
+# --- External repos ---
+external/
+
+# --- Run outputs ---
+outputs/runs/
+outputs/slurm/
+
+# --- Legacy directories (migrated) ---
+bunya/
+frames/
+
+# --- OS ---
+.DS_Store
+Thumbs.db

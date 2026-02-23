@@ -1,80 +1,106 @@
 # Mouse Tracking Vision Pipeline (YOLOv8 + SAM2)
 
-A modular computer-vision pipeline for detecting, segmenting, and tracking multiple rodents in video recordings.
-The project demonstrates practical AI engineering, model integration, and software architecture applied to a real laboratory workflow.
+AI-based workflow for analyzing laboratory mouse movement from real-world lab videos. Combines YOLOv8 detection with SAM2 segmentation for accurate body-part localization (nose, head, tail), trajectory extraction, and behavior analysis.
 
-## What this project demonstrates
+## Quick Start
 
-### Computer Vision Engineering
+```bash
+# Setup
+python -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
 
-* Custom YOLOv8 model for small-animal detection.
-* Precise segmentation using Segment Anything 2 (SAM2).
-* Hybrid tracking: centroid matching, IoU filtering, and color-consistent identity assignment.
+# Run SAM2+YOLO pipeline on a short clip
+python -m src.pipelines.sam2_yolo.run --config configs/local_quick.yaml
 
-### Model Integration & GPU Optimization
+# Extract close-contact frames for labeling
+python scripts/extract_frames.py all --config configs/local_quick.yaml
 
-* Coordinated inference between YOLO and SAM2.
-* Dynamic device selection (CPU/GPU) for performance.
-* Efficient frame-by-frame video processing.
+# Upload frames to Roboflow
+export ROBOFLOW_API_KEY="your-key"
+python scripts/upload_to_roboflow.py --config configs/local_quick.yaml --frames-root outputs/runs/<run>/frames
+```
 
-### Software Engineering
+## How It Works
 
-* Clean, modular architecture (config, models_io, strategies, pipeline, video_utils).
-* Strategy pattern for switching between tracking modes.
-* Proper package structure compatible with VS Code, local dev, and Colab.
-* Single command-line entry point using python -m src.run.
+1. **YOLOv8** detects mouse bounding boxes and body parts
+2. **SAM2** segments each detection into pixel-accurate masks
+3. **Tracking** maintains consistent identity across frames via centroid matching
+4. **Outputs** — overlay videos, extracted frames, run logs
 
-### Automation & Data Processing
+## Project Structure
 
-* Automatic detection, segmentation, mask filtering, and overlay generation.
-* Video reader/writer utilities for long recordings.
-* Deterministic, reusable pipeline for lab environments.
+```
+yolo-sam2-lab-tracking/
+  configs/                      # YAML configs (local_quick, hpc_full)
+  docs/                         # Documentation
+  data/
+    raw/                        # Full videos (gitignored)
+    clips/                      # Short test clips
+    roboflow_export/            # Annotated dataset exports
+  models/
+    yolo/                       # YOLOv8 weights
+    sam2/                       # SAM2 checkpoints
+  src/
+    common/                     # Shared utilities
+      config_loader.py          #   YAML loading, run setup, logging
+      io_video.py               #   Video read/write/iterate
+      metrics.py                #   IoU, centroids, closeness
+      visualization.py          #   Mask overlays, annotations
+      tracking.py               #   Mask filtering, identity matching
+      utils.py                  #   Shared data classes
+    pipelines/
+      sam2_yolo/                # SAM2+YOLO pipeline
+        run.py                  #   Entry point
+        models_io.py            #   Model loading
+        infer_yolo.py           #   YOLO detection
+        infer_sam2.py           #   SAM2 segmentation
+        postprocess.py          #   Filtering + tracking
+      sam3/                     # SAM3 pipeline (placeholder)
+  scripts/
+    extract_frames.py           # Close-contact frame extraction
+    upload_to_roboflow.py       # Roboflow upload
+    extract_clip.py             # Cut clips from raw video
+    export_results.py           # Export run artifacts
+  slurm/                        # HPC job scripts
+  outputs/runs/                 # Structured run outputs
+```
 
-## High-Level Architecture
+## Configuration
 
-src/  
-├─ config.py           # Centralized paths & parameters  
-├─ models_io.py        # Loads YOLO & SAM2 with device management  
-├─ strategies.py       # Simple tracking / consistent-color tracking  
-├─ video_utils.py      # IoU, centroids, overlays, frame handling  
-├─ pipeline.py         # Runs the video processing loop  
-└─ run.py              # CLI entry point  
+All parameters are in YAML configs — no hardcoded thresholds:
 
-external/  
-└─ segment-anything-2/ # Integrated SAM2 repo  
+- **`configs/local_quick.yaml`** — 6s clip, SAM2 tiny, CPU/GPU auto
+- **`configs/hpc_full.yaml`** — Full video, SAM2 large, CUDA
 
-models/  
-└─ yolov8lrata.pt      # Custom YOLOv8 detector
+Override any parameter via CLI:
+```bash
+python -m src.pipelines.sam2_yolo.run --config configs/local_quick.yaml detection.confidence=0.4
+```
 
-## How the system works
+## Documentation
 
-1. YOLOv8 detects rat bounding boxes.
-2. SAM2 segments each box, producing pixel-accurate masks.
-3. Smart filtering removes duplicate or overlapping masks.
-4. Tracking strategy reorders identities per frame, ensuring consistent colors.
-5. Pipeline writes processed frames into an output video.
+- [Project Overview](docs/overview.md)
+- [Data Notes](docs/data_notes.md)
+- [Running Locally](docs/running_local.md)
+- [Running on HPC (Bunya)](docs/running_hpc_bunya.md)
+- [Labeling Guide](docs/labeling_guide.md)
+- [Evaluation Plan](docs/evaluation.md)
+- [Refactoring Plan](docs/refactoring_plan.md)
 
-Each stage is decoupled and testable.
+## Environments
 
-## Usage
+| Environment | Config | Video | SAM2 Model | Device |
+|-------------|--------|-------|-----------|--------|
+| Local laptop | `local_quick.yaml` | 5-10s clips | tiny | auto |
+| UQ Bunya HPC | `hpc_full.yaml` | ~20min full | large | cuda |
 
-`python -m src.run \`
-`  --strategy tracking \`
-`  --input data/videos/input.mp4 \`
-`  --output data/results/output.mp4`
+## Output Structure
 
-### Strategies:
-
-* simple: YOLO + SAM2 with smart mask filtering
-* tracking: YOLO + SAM2 + identity-consistent tracking
-
-## Why this project matters
-
-This project shows end-to-end ownership of a vision system:
-
-* Designing an architecture for real-world experimental data
-* Integrating heterogeneous models
-* Building a robust, configurable processing pipeline
-* Ensuring reproducibility and performance on GPU environments
-
-It reflects experience across AI engineering, software engineering, computer vision, and automation, applicable to roles in ML, backend, and R&D teams.
+```
+outputs/runs/<timestamp>/
+  config_used.yaml      # Reproducibility snapshot
+  logs/run.log          # Execution log
+  overlays/overlay.mp4  # Annotated video
+  scan/                 # Frame analysis artifacts
+  frames/               # Exported frames
+```

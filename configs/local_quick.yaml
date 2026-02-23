@@ -1,0 +1,140 @@
+# ============================================================================
+# Local Quick Test Configuration
+# ============================================================================
+# Use this config for fast iteration on short clips (5-10 seconds).
+# Runs on laptop with CPU or single GPU.
+#
+# Usage:
+#   python -m src.pipelines.sam2_yolo.run --config configs/local_quick.yaml
+#   python scripts/extract_frames.py all --config configs/local_quick.yaml
+# ============================================================================
+
+# --- Input video ---
+video_path: data/clips/output-6s.mp4
+
+# --- Output ---
+# Run artifacts are written to: <output_dir>/<run_id>/
+# run_id is auto-generated as a timestamp (e.g., 2025-12-09_143022)
+output_dir: outputs/runs
+
+# --- Models ---
+models:
+  yolo_path: models/yolo/yolov8lrata.pt
+
+  # SAM2 checkpoint — available sizes:
+  #   sam2.1_hiera_tiny.pt    (~39 MB, fastest, good for local tests)
+  #   sam2.1_hiera_small.pt   (~46 MB)
+  #   sam2.1_hiera_base_plus.pt (~81 MB)
+  #   sam2.1_hiera_large.pt   (~225 MB, best quality, use on HPC)
+  sam2_checkpoint: models/sam2/segment-anything-2/checkpoints/sam2.1_hiera_tiny.pt
+
+  # SAM2 Hydra config — must match the checkpoint size:
+  #   configs/sam2.1/sam2.1_hiera_t.yaml   (tiny)
+  #   configs/sam2.1/sam2.1_hiera_s.yaml   (small)
+  #   configs/sam2.1/sam2.1_hiera_b+.yaml  (base_plus)
+  #   configs/sam2.1/sam2.1_hiera_l.yaml   (large)
+  sam2_config: configs/sam2.1/sam2.1_hiera_t.yaml
+
+  # Device selection: "auto" | "cuda" | "cpu"
+  # "auto" picks CUDA if available, otherwise CPU.
+  device: auto
+
+# --- Detection (YOLO) ---
+detection:
+  # Minimum confidence score to keep a detection.
+  # Range: [0.0, 1.0]. Lower = more detections (more noise).
+  # Typical values: 0.25 (permissive) to 0.5 (strict).
+  confidence: 0.25
+
+  # Maximum number of animals expected in the scene.
+  # Used to cap mask filtering — keeps at most this many instances.
+  max_animals: 2
+
+# --- Segmentation (SAM2) ---
+segmentation:
+  # Threshold applied to raw SAM2 mask logits.
+  # Range: [-inf, +inf], typically 0.0. Higher = stricter mask boundary.
+  sam_threshold: 0.0
+
+  # IoU threshold for deduplicating overlapping masks.
+  # Range: [0.0, 1.0]. Masks with IoU above this are considered duplicates.
+  mask_iou_threshold: 0.5
+
+# --- Closeness analysis (for extract_frames) ---
+closeness:
+  # Normalized distance threshold for "close" classification.
+  # Distance between detection centroids is normalized by the frame diagonal.
+  # Range: [0.0, 1.0]. Lower = stricter (must be closer).
+  # 0.15 means centroids within 15% of the frame diagonal.
+  distance_threshold_norm: 0.15
+
+  # IoU threshold between bounding boxes for "close" classification.
+  # Range: [0.0, 1.0]. Any pair above this triggers "close".
+  iou_threshold: 0.1
+
+# --- Encounter grouping ---
+encounters:
+  # Maximum gap (seconds) between close frames to merge into one encounter.
+  # Larger = more merging of nearby events.
+  max_gap_seconds: 2.0
+
+  # Minimum duration (seconds) for an encounter to be kept.
+  # Shorter encounters are discarded as noise.
+  min_duration_seconds: 0.5
+
+# --- Frame sampling ---
+sampling:
+  # Total number of frames to export across all encounters.
+  target_total_frames: 50
+
+  # Minimum frames to export per encounter (even for short ones).
+  min_per_encounter: 5
+
+# --- Export ---
+export:
+  # Prefix for exported frame filenames.
+  # Output pattern: <prefix>_e<encounter>_f<frame>.jpg
+  filename_prefix: rat_close
+
+  # Output directory for exported frames.
+  # null = automatically placed under <run_dir>/frames/
+  output_dir: null
+
+# --- Tracking ---
+tracking:
+  # Strategy: "simple" (no identity persistence) | "tracking" (centroid-based matching)
+  strategy: tracking
+
+  # Maximum pixel distance between centroids for identity matching.
+  # If a centroid moves more than this between frames, identity is lost.
+  # Depends on resolution and movement speed. 150px typical for 640x480.
+  max_centroid_distance: 150.0
+
+# --- Video output ---
+output:
+  # Video codec for overlay output.
+  #   "XVID" -> .avi, universal playback (recommended)
+  #   "avc1" -> .mp4 H.264, needs OpenH264 library installed
+  #   "mp4v" -> .mp4 MPEG-4 Part 2, may not play on Windows
+  video_codec: XVID
+
+  # RGBA colors for each tracked animal (up to max_animals).
+  # Format: [R, G, B, Alpha] where Alpha controls mask transparency (0-255).
+  overlay_colors:
+    - [0, 255, 0, 150]    # Green
+    - [255, 0, 0, 150]    # Red
+
+# --- Scan limits ---
+scan:
+  # Maximum frames to process. null = process entire video.
+  # Set to a small number for quick tests (e.g., 150 = ~6s at 25fps).
+  max_frames: 150
+
+# --- Roboflow (for upload script) ---
+roboflow:
+  workspace: modelos-yolo
+  project: pruebasratslabs-c02t9
+  # Upload split: "train" | "valid" | "test"
+  split: train
+  # Optional batch name to group uploads (null = no grouping)
+  batch_name: null

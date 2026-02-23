@@ -5,7 +5,7 @@ matplotlib
 Pillow
 scipy
 
-# --- Machine Learning / Deep Learning ---
+# --- Deep learning ---
 torch
 torchvision
 torchaudio
@@ -13,9 +13,15 @@ torchaudio
 # --- YOLOv8 ---
 ultralytics
 
-# SAM2 repo local (editable install)
--e ./external/segment-anything-2
+# --- SAM2 (local editable install) ---
+-e ./models/sam2/segment-anything-2
 hydra-core
+
+# --- Config loading ---
+pyyaml
+
+# --- Annotation platform ---
+roboflow
 
 # --- Utilities ---
 ipython
