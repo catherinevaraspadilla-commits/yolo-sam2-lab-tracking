@@ -11,28 +11,68 @@
 ## Initial Setup (one-time)
 
 ```bash
-# On Bunya login node
-cd ~
-git clone <repo-url> yolo-sam2-lab-tracking
+# =========================
+# 0) Login (from your laptop)
+# ssh s4948012@bunya.rcc.uq.edu.au
+# =========================
+
+# =========================
+# 1) Reserve a GPU node (run on Bunya)
+# =========================
+salloc --partition=gpu_cuda --qos=gpu --gres=gpu:1 --time=02:00:00 --mem=16G srun --pty bash -
+
+# =========================
+# 2) Load modules (do this BEFORE activating venv)
+# =========================
+module load python/3.10.4
+module load cuda
+python --version
+nvidia-smi   # optional sanity check that you are on a GPU node
+
+# =========================
+# 3) Go to project (clone first time only)
+# =========================
+mkdir -p ~/Balbi
+cd ~/Balbi
+
+# First time only:
+# git clone https://github.com/catherinevaraspadilla-commits/yolo-sam2-lab-tracking.git
 cd yolo-sam2-lab-tracking
 
-# Create venv
-python3 -m venv .venv
+# =========================
+# 4) Create / recreate venv (recommended if you saw libpython errors)
+# =========================
+rm -rf .venv
+python -m venv .venv
 source .venv/bin/activate
 
-# Load CUDA
-module load cuda
+# Upgrade pip tooling
+python -m pip install --upgrade pip setuptools wheel
 
-# Install PyTorch for cluster CUDA version
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+# =========================
+# 5) Install PyTorch (CUDA 11.8 wheels)
+# =========================
+python -m pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
 
-# Install dependencies
-pip install -r requirements.txt
+# Quick check (should say CUDA available: True)
+python -c "import torch; print('CUDA available:', torch.cuda.is_available()); print(torch.version.cuda)"
 
-# Download SAM2 checkpoints
+# =========================
+# 6) Install project dependencies
+# =========================
+mkdir -p models/sam2
+git clone https://github.com/facebookresearch/segment-anything-2.git models/sam2/segment-anything-2
+python -m pip install -r requirements.txt
+python -m pip install ultralytics opencv-python roboflow
+
+# =========================
+# 7) Download SAM2 checkpoints
+# =========================
 cd models/sam2/segment-anything-2/checkpoints
 bash download_ckpts.sh
-cd ~/yolo-sam2-lab-tracking
+
+# Back to project root
+cd ~/Balbi/yolo-sam2-lab-tracking
 ```
 
 ## Running Inference
