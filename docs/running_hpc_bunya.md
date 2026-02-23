@@ -73,6 +73,9 @@ bash download_ckpts.sh
 
 # Back to project root
 cd ~/Balbi/yolo-sam2-lab-tracking
+
+scp s4948012@bunya.rcc.uq.edu.au:~/Balbi/yolo-sam2-lab-tracking/outputs/runs/2026-02-23_191503_sam2_yolo/overlays/overlay.avi `
+ "C:\Users\CatherineVaras\Downloads\yolo-sam2-lab-tracking\outputs"
 ```
 
 ## Running Inference

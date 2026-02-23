@@ -50,6 +50,21 @@ detection:
   # Used to cap mask filtering — keeps at most this many instances.
   max_animals: 2
 
+  # Keypoint names for pose models (must match training annotation order).
+  # The yolov8lrata.pt model has 7 keypoints per detection.
+  # Set to null to use defaults from infer_yolo.py.
+  keypoint_names:
+    - tail_tip
+    - tail_base
+    - back
+    - mid_body
+    - neck
+    - ear
+    - nose
+
+  # Minimum confidence to render a keypoint. Range: [0.0, 1.0].
+  keypoint_min_conf: 0.3
+
 # --- Segmentation (SAM2) ---
 segmentation:
   # Threshold applied to raw SAM2 mask logits.

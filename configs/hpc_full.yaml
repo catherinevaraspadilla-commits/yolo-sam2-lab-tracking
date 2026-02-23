@@ -43,6 +43,15 @@ models:
 detection:
   confidence: 0.25
   max_animals: 2
+  keypoint_names:
+    - tail_tip
+    - tail_base
+    - back
+    - mid_body
+    - neck
+    - ear
+    - nose
+  keypoint_min_conf: 0.3
 
 # --- Segmentation (SAM2) ---
 segmentation:

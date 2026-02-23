@@ -21,7 +21,7 @@ import cv2
 
 from src.common.config_loader import load_config, setup_run_dir, setup_logging
 from src.common.io_video import open_video_reader, get_video_properties, create_video_writer, iter_frames
-from src.common.visualization import apply_masks_overlay, draw_centroids, draw_detections, draw_text
+from src.common.visualization import apply_masks_overlay, draw_centroids, draw_detections, draw_keypoints, draw_text
 from .models_io import load_models
 from .infer_yolo import detect_boxes
 from .infer_sam2 import segment_from_boxes
@@ -80,6 +80,8 @@ def run_pipeline(config_path: str | Path, cli_overrides: List[str] | None = None
     colors_raw = config.get("output", {}).get("overlay_colors")
     colors = [tuple(c) for c in colors_raw] if colors_raw else None
     max_frames = config.get("scan", {}).get("max_frames")
+    kpt_names = config.get("detection", {}).get("keypoint_names")
+    kpt_min_conf = config.get("detection", {}).get("keypoint_min_conf", 0.3)
 
     # Tracking state
     prev_centroids: List[Tuple[float, float]] = []
@@ -88,8 +90,8 @@ def run_pipeline(config_path: str | Path, cli_overrides: List[str] | None = None
     for frame_idx, frame_bgr in iter_frames(cap, max_frames=max_frames):
         frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
 
-        # Step 1: YOLO detection
-        detections = detect_boxes(yolo, frame_rgb, det_conf)
+        # Step 1: YOLO detection (boxes + keypoints if pose model)
+        detections = detect_boxes(yolo, frame_rgb, det_conf, keypoint_names=kpt_names)
 
         # Step 2: SAM2 segmentation
         masks = segment_from_boxes(sam, frame_rgb, detections, sam_thr, iou_thr)
@@ -106,6 +108,7 @@ def run_pipeline(config_path: str | Path, cli_overrides: List[str] | None = None
         # Step 4: Render overlay
         frame_out = apply_masks_overlay(frame_rgb, ordered_masks, colors=colors)
         frame_out = draw_detections(frame_out, detections, colors=colors)
+        frame_out = draw_keypoints(frame_out, detections, colors=colors, min_conf=kpt_min_conf)
         if strategy == "tracking" and centroids:
             frame_out = draw_centroids(frame_out, centroids, colors=colors)
         frame_out = draw_text(

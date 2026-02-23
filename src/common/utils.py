@@ -9,14 +9,24 @@ from typing import List, Optional, Tuple, Any, Dict
 
 
 @dataclass
+class Keypoint:
+    """A single keypoint with position and confidence."""
+    x: float
+    y: float
+    conf: float
+    name: Optional[str] = None
+
+
+@dataclass
 class Detection:
-    """A single object detection with bounding box and confidence."""
+    """A single object detection with bounding box, confidence, and optional keypoints."""
     x1: float
     y1: float
     x2: float
     y2: float
     conf: float
     class_name: Optional[str] = None
+    keypoints: Optional[List[Keypoint]] = None
 
     def center(self) -> Tuple[float, float]:
         """Return the (cx, cy) center of the bounding box."""

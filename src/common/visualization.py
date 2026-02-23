@@ -132,6 +132,58 @@ def draw_detections(
     return out
 
 
+def draw_keypoints(
+    frame_rgb: np.ndarray,
+    detections: list,
+    colors: Optional[List[Tuple[int, int, int, int]]] = None,
+    min_conf: float = 0.3,
+    radius: int = 4,
+    font_scale: float = 0.35,
+) -> np.ndarray:
+    """Draw keypoints from pose detections.
+
+    Each detection's keypoints are drawn as colored dots with name labels.
+    Only keypoints with confidence above min_conf are drawn.
+
+    Args:
+        frame_rgb: Input frame in RGB format.
+        detections: List of Detection objects that have .keypoints.
+        colors: RGBA color tuples per detection. Defaults to DEFAULT_COLORS.
+        min_conf: Minimum keypoint confidence to draw.
+        radius: Circle radius for keypoint dots.
+        font_scale: Font scale for keypoint name labels.
+
+    Returns:
+        Annotated frame with keypoints.
+    """
+    if colors is None:
+        colors = DEFAULT_COLORS
+
+    out = frame_rgb.copy()
+    for i, det in enumerate(detections):
+        if det.keypoints is None:
+            continue
+        r, g, b, _ = colors[i % len(colors)]
+        color = (r, g, b)
+
+        for kp in det.keypoints:
+            if kp.conf < min_conf:
+                continue
+            cx, cy = int(kp.x), int(kp.y)
+            # Filled circle
+            cv2.circle(out, (cx, cy), radius, color, -1)
+            # White outline for visibility
+            cv2.circle(out, (cx, cy), radius, (255, 255, 255), 1)
+            # Label
+            if kp.name:
+                cv2.putText(
+                    out, kp.name, (cx + radius + 2, cy + 3),
+                    cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255, 255, 255), 1,
+                )
+
+    return out
+
+
 def draw_text(
     frame_rgb: np.ndarray,
     text: str,
