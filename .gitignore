@@ -19,12 +19,16 @@ env/
 *.swo
 
 # --- Data (large files, not committed) ---
-data/raw/
+# Contents are ignored but .gitkeep preserves the directory structure
+data/raw/*
+!data/raw/.gitkeep
 data/videos/
-data/roboflow_export/
+data/roboflow_export/*
+!data/roboflow_export/.gitkeep
 
-# --- Models (large weights, not committed) ---
-models/yolo/*.pt
+# --- Models ---
+# YOLO weights ARE committed (86MB, custom trained — essential for the pipeline)
+# SAM2 repo + checkpoints are NOT committed (225MB+, downloaded on each machine)
 models/sam2/
 
 # --- External repos ---
