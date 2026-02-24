@@ -63,13 +63,6 @@ detection:
   # Lower values (0.3-0.5) suppress merged boxes when animals touch.
   nms_iou: null
 
-  # Adaptive area filtering: reject boxes whose area deviates from learned reference.
-  # area_tolerance: max allowed deviation as fraction (0.4 = ±40%). null = disabled.
-  # area_warmup_frames: frames to learn reference before filtering starts.
-  # WARNING: can drop valid detections near walls (clipped boxes are smaller).
-  area_tolerance: null
-  area_warmup_frames: 10
-
 # --- Segmentation (SAM2) ---
 segmentation:
   sam_threshold: 0.0
