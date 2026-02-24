@@ -139,10 +139,10 @@ def run_pipeline(config_path: str | Path, cli_overrides: List[str] | None = None
             keypoint_names=kpt_names,
             filter_class=filter_class,
             border_padding_px=border_padding,
-            max_detections=max_animals,
+            max_detections=None,
             edge_margin=edge_margin,
-            area_ref=area_ref if frame_count >= area_warmup else None,
-            area_tolerance=area_tolerance,
+            area_ref=area_ref if area_tolerance and frame_count >= area_warmup else None,
+            area_tolerance=area_tolerance or 0.4,
             nms_iou=nms_iou,
         )
 

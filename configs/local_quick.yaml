@@ -85,9 +85,11 @@ detection:
 
   # Adaptive area filtering: reject boxes whose area deviates from learned reference.
   # The reference area is learned via EMA during the first area_warmup_frames.
-  # area_tolerance: max allowed deviation (0.4 = ±40%).
+  # area_tolerance: max allowed deviation as fraction (0.4 = ±40%). null = disabled.
   # area_warmup_frames: frames to learn reference before filtering starts.
-  area_tolerance: 0.4
+  # WARNING: can drop valid detections near walls (clipped boxes are smaller).
+  # Enable only if you see ghost/artifact detections with abnormal size.
+  area_tolerance: null
   area_warmup_frames: 10
 
 # --- Segmentation (SAM2) ---
