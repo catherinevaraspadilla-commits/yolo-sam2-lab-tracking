@@ -121,21 +121,44 @@ what it controls, and how to adjust it based on common error symptoms.
 
 ---
 
-### 1.7 YOLO NMS (Non-Maximum Suppression)
+### 1.7 `detection.edge_margin`
 
 | | |
 |---|---|
-| **Config key** | Not currently exposed in config |
-| **Default** | Ultralytics internal default (`iou=0.7`) |
-| **Where in code** | `model(frame, conf=..., iou=0.5)` in `infer_yolo.py` |
-| **What it does** | Controls how aggressively YOLO merges overlapping boxes. |
+| **Config key** | `detection.edge_margin` |
+| **Default** | `0` (disabled) |
+| **Range** | `0` – `50` (recommended: 10–15) |
+| **Where in code** | `infer_yolo.py` → `_filter_edge_margin()` |
+| **What it does** | Rejects detections whose centroid is within this many pixels of the frame border. Suppresses flickering partial detections at walls. |
 
-**To expose:** Add `detection.nms_iou` to config, pass as `model(frame, conf=confidence, iou=nms_iou)`.
+**Tuning:**
 
-| Symptom | Action |
-|---------|--------|
-| Two boxes for the same rat | Lower NMS IoU to 0.4–0.5 |
-| Two overlapping rats merged into one box | Raise NMS IoU to 0.8–0.9 |
+| Symptom | Action | Example |
+|---------|--------|---------|
+| Flickering boxes at walls/borders | Set to 10–15 | `detection.edge_margin=10` |
+| Real rats near walls being dropped | **Lower** or disable | `detection.edge_margin=0` |
+
+**Trade-off:** Higher values suppress more border noise but may drop rats that walk along walls. For 640x480 video with ~100-150px rat bodies, 10-15px is safe.
+
+---
+
+### 1.8 `detection.nms_iou`
+
+| | |
+|---|---|
+| **Config key** | `detection.nms_iou` |
+| **Default** | `null` (uses YOLO internal default ~0.7) |
+| **Range** | `0.3` – `0.9` |
+| **Where in code** | `infer_yolo.py` → `model.track(iou=nms_iou)` |
+| **What it does** | Custom NMS IoU threshold. Controls how aggressively YOLO merges overlapping boxes. Lower = more aggressive suppression. |
+
+**Tuning:**
+
+| Symptom | Action | Example |
+|---------|--------|---------|
+| Two boxes for the same rat (merged detection) | **Lower** to 0.4–0.5 | `detection.nms_iou=0.5` |
+| Two overlapping rats merged into one box | **Raise** to 0.8–0.9 | `detection.nms_iou=0.8` |
+| Default works fine | Leave as `null` | |
 
 ---
 
@@ -316,11 +339,10 @@ See [running_hpc_bunya.md](running_hpc_bunya.md) for detailed GPU setup.
 **Cause:** Rats at frame borders → unstable YOLO detections → centroid jumps → tracker reassigns identity.
 
 **Knobs (try in order):**
-1. `detection.yolo_border_padding_px=64` — stabilize YOLO detections at edges
-2. `tracking.max_missing_frames=8` — hold slot through brief gaps
-3. `detection.confidence=0.20` — avoid detections appearing/disappearing
-4. `tracking.area_change_threshold=0.5` — tolerate area changes from partial views
-5. `tracking.use_mask_iou=true` — better matching when centroids jump
+1. `detection.edge_margin=10` — suppress flickering partial detections at walls
+2. `detection.yolo_border_padding_px=64` — stabilize YOLO detections at edges
+3. `tracking.max_missing_frames=8` — hold slot through brief gaps
+4. `detection.confidence=0.20` — avoid detections appearing/disappearing
 
 ---
 
@@ -351,10 +373,11 @@ See [running_hpc_bunya.md](running_hpc_bunya.md) for detailed GPU setup.
 
 ### Problem: Two rats merged during close contact
 
-1. `segmentation.mask_iou_threshold=0.8` — keep both overlapping masks
-2. `tracking.max_centroid_distance=100` — prevent cross-matching
-3. `tracking.use_mask_iou=true` — distinguish by shape
-4. Try larger SAM2 model for better mask separation
+1. `detection.nms_iou=0.5` — tighter NMS catches merged YOLO boxes
+2. `segmentation.mask_iou_threshold=0.8` — keep both overlapping masks
+3. `tracking.max_centroid_distance=100` — prevent cross-matching
+4. `tracking.w_iou=0.5` — prioritize shape similarity over distance
+5. Try larger SAM2 model for better mask separation
 
 ---
 
@@ -365,7 +388,6 @@ See [running_hpc_bunya.md](running_hpc_bunya.md) for detailed GPU setup.
 | SAM2 tiny instead of large | 3-5x faster, less VRAM |
 | `scan.max_frames=300` | Process fewer frames |
 | `models.device=cuda` | 10-50x faster than CPU for SAM2 |
-| `tracking.use_mask_iou=false` | Skip IoU computation |
 | `detection.yolo_border_padding_px=0` | Skip padding overhead |
 
 ---
@@ -384,6 +406,8 @@ detection.confidence                # 0.0–1.0 (default: 0.25)
 detection.max_animals               # integer (default: 2)
 detection.filter_class              # string or null (default: null)
 detection.yolo_border_padding_px    # integer (default: 0)
+detection.edge_margin               # integer px (default: 0, disabled)
+detection.nms_iou                   # float or null (default: null, uses YOLO default ~0.7)
 detection.keypoint_names            # list of 7 strings
 detection.keypoint_min_conf         # 0.0–1.0 (default: 0.3)
 
@@ -391,11 +415,14 @@ detection.keypoint_min_conf         # 0.0–1.0 (default: 0.3)
 segmentation.sam_threshold          # float (default: 0.0)
 segmentation.mask_iou_threshold     # 0.0–1.0 (default: 0.5)
 
-# Tracking (FixedSlotTracker)
+# Tracking (SlotTracker)
+tracking.tracker_config             # "botsort.yaml" | "bytetrack.yaml" | path
 tracking.max_centroid_distance      # pixels (default: 150.0)
-tracking.area_change_threshold      # 0.0–1.0 (default: 0.4)
 tracking.max_missing_frames         # integer (default: 5)
-tracking.use_mask_iou               # true | false (default: true)
+tracking.w_dist                     # float (default: 0.4)
+tracking.w_iou                      # float (default: 0.4)
+tracking.w_area                     # float (default: 0.2)
+tracking.cost_threshold             # float (default: 0.85)
 
 # Scan limits
 scan.max_frames                     # integer or null
@@ -403,9 +430,4 @@ scan.max_frames                     # integer or null
 # Video output
 output.video_codec                  # "XVID" | "avc1" | "mp4v"
 output.overlay_colors               # list of [R, G, B, A]
-
-# Not yet in config (requires code change):
-# YOLO NMS IoU threshold (internal default: 0.7)
-# YOLO input image size (internal default: 640)
-# Frame skip / stride
 ```

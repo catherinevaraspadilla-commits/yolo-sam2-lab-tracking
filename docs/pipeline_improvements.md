@@ -1,6 +1,6 @@
 # Pipeline Architecture
 
-This document describes the final pipeline architecture, what each component does,
+This document describes the pipeline architecture, what each component does,
 why it reduces ID switching / color flicker, and how to tune parameters.
 
 ---
@@ -17,8 +17,13 @@ YOLO model.track() (BoT-SORT / ByteTrack)
   │  → boxes + keypoints + class names + TRACK IDs
   │  → filter by class (filter_class)
   │  → correct coordinates if padded
+  │  → [Optional] custom NMS IoU (nms_iou)
   │  BoT-SORT provides: Kalman prediction, motion compensation,
   │  track buffer (survives lost detections), optional ReID
+  │
+  ▼
+Post-Detection Filters (infer_yolo.py)
+  │  → [Optional] Edge margin: reject centroids within N px of border
   │
   ▼
 SAM2 Segmentation (per box, on original unpadded frame)
@@ -61,82 +66,87 @@ Output Video (.avi)
 
 ---
 
-## What Changed (vs. Previous Version) and Why
+## Component Details
 
-### 1. Replaced `model()` with `model.track()` (BoT-SORT)
+### 1. YOLO Detection + Tracking (`infer_yolo.py`)
 
-**Before:** `model(frame, conf=...)` — per-frame detection, no temporal state.
-**After:** `model.track(frame, persist=True, tracker="botsort.yaml")` — BoT-SORT
-maintains a Kalman-filter state for each tracked object across frames.
+Uses `model.track()` with BoT-SORT for stable track IDs across frames.
 
-**Why this helps:**
-- BoT-SORT predicts where each object will be in the next frame. Even if YOLO
-  misses a detection for 1-2 frames, the Kalman filter keeps the track alive
-  (controlled by `track_buffer` in the tracker YAML, default=30 frames).
-- The track ID assignment uses motion prediction, not just nearest-neighbor,
-  so it's more robust to crossing paths and close contact.
-- Global Motion Compensation (sparseOptFlow) handles any camera vibration.
+**Detection flow:**
+1. Optional mirror-padding (`yolo_border_padding_px`) to help detect rats at frame edges
+2. `model.track(frame, conf=confidence, persist=True, tracker=tracker_config)` — BoT-SORT maintains Kalman-filter state across frames
+3. Optional custom NMS IoU (`nms_iou`) — tighter NMS suppresses merged boxes when animals touch
+4. Parse results into `Detection` objects with track IDs, boxes, keypoints, class names
+5. Coordinate correction if frame was padded
+6. Optional edge margin filter — reject detections whose centroid is within N pixels of frame border
+
+**Available YOLO-level filters:**
+
+| Filter | Config key | Default | Purpose |
+|--------|-----------|---------|---------|
+| Confidence | `detection.confidence` | 0.25 | Min detection score |
+| Class filter | `detection.filter_class` | null | Only keep this class |
+| Border padding | `detection.yolo_border_padding_px` | 0 | Mirror-pad for edge detections |
+| Edge margin | `detection.edge_margin` | 0 | Reject centroids near frame border |
+| Custom NMS | `detection.nms_iou` | null | Tighter NMS IoU (null = YOLO default ~0.7) |
 
 **Where:** [infer_yolo.py](../src/pipelines/sam2_yolo/infer_yolo.py) — `detect_and_track()`.
 
 ---
 
-### 2. Replaced greedy matching with Hungarian assignment
+### 2. SAM2 Segmentation (`infer_sam2.py`)
 
-**Before:** For each slot, greedily pick the nearest mask that passes distance
-+ area gates. This is sequential — slot 0 picks first, slot 1 gets leftovers.
-With 2 objects, if slot 0 grabs the wrong mask, slot 1 is forced to swap.
+Uses YOLO bounding boxes as prompts for SAM2 mask prediction.
 
-**After:** Build a cost matrix (masks × slots) and solve with
-`scipy.optimize.linear_sum_assignment()` for the globally optimal assignment
-that minimizes total cost.
+- One SAM2 call per detection (box prompt, `multimask_output=False`)
+- Operates on the original unpadded frame
+- Mask threshold applied to raw logits: `mask = raw_masks[0] > sam_threshold`
 
-**Why this helps:**
-For 2 objects, the Hungarian algorithm compares both possible pairings:
+**Where:** [infer_sam2.py](../src/pipelines/sam2_yolo/infer_sam2.py) — `segment_from_boxes()`.
+
+---
+
+### 3. Post-processing + Tracking (`postprocess.py` + `tracking.py`)
+
+**Mask deduplication:** When more masks than `max_animals` exist, keeps the largest non-overlapping masks (IoU-based filtering).
+
+**SlotTracker** assigns masks to fixed color slots:
+- **Stage 1:** Match by YOLO track ID (O(1) lookup from `_track_to_slot` dict)
+- **Stage 2:** Hungarian optimal assignment for remaining masks using soft cost matrix
+- **Stage 3:** Unmatched masks go to free slots
+- **Stage 4:** Unmatched slots increment missing counter, released after `max_missing_frames`
+
+**Where:** [postprocess.py](../src/pipelines/sam2_yolo/postprocess.py), [tracking.py](../src/common/tracking.py).
+
+---
+
+## Key Design Decisions and Why
+
+### Why `model.track()` instead of `model()`
+
+`model.track()` with BoT-SORT provides:
+- **Kalman prediction:** Predicts where each object will be next frame. Even if YOLO misses for 1-2 frames, the track stays alive (`track_buffer` in tracker YAML, default=30).
+- **Motion-aware assignment:** Uses motion prediction, not just nearest-neighbor, so more robust to crossing paths.
+- **Global Motion Compensation:** `sparseOptFlow` handles camera vibration.
+- **Stable track IDs:** Primary identity signal for the SlotTracker.
+
+### Why Hungarian assignment instead of greedy matching
+
+Greedy (slot 0 picks first, slot 1 gets leftovers) causes cascading errors when two objects are close. Hungarian compares both possible pairings:
 - `cost(mask_A→slot_0) + cost(mask_B→slot_1)` vs
 - `cost(mask_A→slot_1) + cost(mask_B→slot_0)`
-and picks whichever is cheaper overall. This eliminates the cascading
-errors of greedy matching during crossings.
 
-**Where:** [tracking.py](../src/common/tracking.py) — `SlotTracker._hungarian_assign()`.
+and picks whichever is cheaper overall.
 
----
+### Why soft area cost instead of hard area veto
 
-### 3. Removed hard area gating (replaced with soft cost)
+Hard area veto (reject if area changes >40%) drops valid matches near borders where boxes are clipped. Soft cost (weight `w_area=0.2`) makes large area changes more expensive but not impossible. Only truly pathological cases (area ratio >5x) are vetoed.
 
-**Before:** `area_change_threshold: 0.4` — if a mask's area changed by >40%
-from the previous frame, the match was **vetoed** (hard reject). Near borders
-or during contact, legitimate area changes exceed 40% (partial cropping,
-occlusion), causing the correct match to be rejected → the other rat fills
-the slot → color swap.
+### Why edge margin exists but area filter was removed
 
-**After:** Area change is a **soft cost** added to the assignment matrix with
-weight `w_area=0.2`. Large area changes make the match more expensive but
-NOT impossible. Only truly pathological cases (area ratio > 5x) are vetoed.
+**Edge margin** (reject centroids near frame border) is a simple, reliable filter that catches flickering partial detections at walls without dropping real objects.
 
-**Why this helps:**
-The Hungarian solver can still pick the correct assignment even when area
-changes are large, as long as the centroid distance and mask IoU costs
-favor the correct pairing. In practice, this eliminates the most common
-cause of ID switches at frame borders.
-
-**Where:** [tracking.py](../src/common/tracking.py) — `SlotTracker._compute_cost()`.
-
----
-
-### 4. YOLO track ID → slot mapping (primary identity)
-
-**Before:** Identity came entirely from centroid matching between frames.
-**After:** YOLO track IDs (from BoT-SORT) serve as the primary identity signal.
-Each YOLO track ID is mapped to a slot index via `_track_to_slot` dict.
-When a mask arrives with a known track ID, it's instantly assigned to the
-correct slot without any cost computation.
-
-Hungarian assignment is only used as fallback for:
-- New tracks not yet in the mapping
-- Track IDs that change (rare with BoT-SORT but can happen)
-
-**Where:** [tracking.py](../src/common/tracking.py) — `SlotTracker._match_by_track_id()`.
+**Adaptive area filter** was implemented and tested but **removed** because it consistently dropped valid wall-adjacent detections — clipped boxes near walls are legitimately smaller, triggering the area filter. The tracker's soft area cost handles area changes more gracefully than a hard YOLO-level filter.
 
 ---
 
@@ -189,6 +199,8 @@ detection:
   confidence: 0.25
   filter_class: null
   yolo_border_padding_px: 0
+  edge_margin: 0
+  nms_iou: null
 
 tracking:
   tracker_config: botsort.yaml
@@ -205,6 +217,7 @@ tracking:
 ```bash
 python -m src.pipelines.sam2_yolo.run --config configs/local_quick.yaml \
     detection.yolo_border_padding_px=64 \
+    detection.edge_margin=10 \
     detection.confidence=0.20 \
     tracking.max_missing_frames=10
 ```
@@ -216,11 +229,13 @@ python -m src.pipelines.sam2_yolo.run --config configs/local_quick.yaml \
     tracking.w_iou=0.5 \
     tracking.w_dist=0.3 \
     tracking.w_area=0.2 \
-    tracking.max_centroid_distance=100
+    tracking.max_centroid_distance=100 \
+    detection.nms_iou=0.5
 ```
 
 This prioritizes mask shape (IoU) over centroid distance, which helps when
-centroids are close but mask shapes are distinguishable.
+centroids are close but mask shapes are distinguishable. Lower NMS catches
+merged boxes.
 
 ### If detections are noisy
 
@@ -280,7 +295,9 @@ Processed 100 frames | slot0:tid=1(miss=0) | slot1:tid=2(miss=0)
 - **YOLO-only mode:** Skip SAM2 for fast experiments. Use YOLO boxes for tracking.
 - **Frame skip / stride:** Process every Nth frame for speed.
 - **Temporal smoothing:** EMA on box/keypoint coordinates.
-- **SAM2 VideoPredictor:** Use temporal mask propagation for even more stable
+- **SAM2 VideoPredictor:** Use temporal mask propagation for more stable
   mask tracking (major architectural change).
-- **YOLO 26:** Upgrade model from YOLOv8 to YOLO26 for better detections.
-  Retrain on same dataset. YOLO26 supports NMS-free end-to-end inference.
+- **SAM2 point prompts:** Use previous centroid as point prompt when box prompt
+  fails (e.g., during close contact). Requires tracker → segmentation feedback loop.
+- **YOLO 26:** Upgrade from YOLOv8 to YOLO26 for better detections.
+  YOLO26 supports NMS-free end-to-end inference.

@@ -72,17 +72,27 @@ Replaced all `print()` calls with Python `logging`. Logs go to both console and 
 
 ## Parameter Reference
 
-All tunable parameters and their defaults are documented inline in `configs/local_quick.yaml`. Key parameters:
+All tunable parameters and their defaults are documented inline in `configs/local_quick.yaml`.
+For detailed tuning guidance, see [parameter_tuning.md](parameter_tuning.md).
+
+Key parameters:
 
 | Parameter | Config Key | Default | Description |
 |-----------|-----------|---------|-------------|
 | YOLO confidence | `detection.confidence` | 0.25 | Min detection confidence |
 | Max animals | `detection.max_animals` | 2 | Max tracked instances |
+| Edge margin | `detection.edge_margin` | 0 | Reject border detections (px) |
+| Custom NMS | `detection.nms_iou` | null | Custom NMS IoU threshold |
+| Border padding | `detection.yolo_border_padding_px` | 0 | Mirror-pad frame borders (px) |
 | SAM threshold | `segmentation.sam_threshold` | 0.0 | Mask logit threshold |
 | Mask IoU | `segmentation.mask_iou_threshold` | 0.5 | Dedup threshold |
+| Tracker | `tracking.tracker_config` | botsort.yaml | BoT-SORT or ByteTrack |
+| Tracking distance | `tracking.max_centroid_distance` | 150.0 | Distance normalization constant |
+| Missing frames | `tracking.max_missing_frames` | 5 | Frames before slot release |
+| Cost weights | `tracking.w_dist/w_iou/w_area` | 0.4/0.4/0.2 | Hungarian cost weights |
+| Cost threshold | `tracking.cost_threshold` | 0.85 | Max cost for valid assignment |
 | Close distance | `closeness.distance_threshold_norm` | 0.15 | Normalized by diagonal |
 | Close IoU | `closeness.iou_threshold` | 0.1 | Bbox overlap for "close" |
 | Encounter gap | `encounters.max_gap_seconds` | 2.0 | Max gap to merge |
 | Encounter min | `encounters.min_duration_seconds` | 0.5 | Min encounter length |
 | Sample target | `sampling.target_total_frames` | 50/200 | Frames to export |
-| Tracking distance | `tracking.max_centroid_distance` | 150.0 | Max px for ID match |
