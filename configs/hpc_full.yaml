@@ -55,6 +55,20 @@ detection:
   filter_class: null
   yolo_border_padding_px: 0
 
+  # Edge margin: reject detections whose centroid is within N pixels of frame border.
+  # 0 = disabled. 10-15 = recommended for lab videos.
+  edge_margin: 0
+
+  # Custom NMS IoU threshold. null = use YOLO default (~0.7).
+  # Lower values (0.3-0.5) suppress merged boxes when animals touch.
+  nms_iou: null
+
+  # Adaptive area filtering: reject boxes whose area deviates from learned reference.
+  # area_tolerance: max allowed deviation (0.4 = ±40%).
+  # area_warmup_frames: frames to learn reference before filtering starts.
+  area_tolerance: 0.4
+  area_warmup_frames: 10
+
 # --- Segmentation (SAM2) ---
 segmentation:
   sam_threshold: 0.0

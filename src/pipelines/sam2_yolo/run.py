@@ -78,6 +78,11 @@ def run_pipeline(config_path: str | Path, cli_overrides: List[str] | None = None
     filter_class = det_cfg.get("filter_class")
     border_padding = det_cfg.get("yolo_border_padding_px", 0)
 
+    edge_margin = det_cfg.get("edge_margin", 0)
+    nms_iou = det_cfg.get("nms_iou")
+    area_tolerance = det_cfg.get("area_tolerance", 0.4)
+    area_warmup = det_cfg.get("area_warmup_frames", 10)
+
     sam_thr = config.get("segmentation", {}).get("sam_threshold", 0.0)
     iou_thr = config.get("segmentation", {}).get("mask_iou_threshold", 0.5)
 
@@ -105,6 +110,12 @@ def run_pipeline(config_path: str | Path, cli_overrides: List[str] | None = None
         logger.info("YOLO border padding: %d px (mirror)", border_padding)
     if filter_class:
         logger.info("YOLO class filter: '%s'", filter_class)
+    if edge_margin > 0:
+        logger.info("YOLO edge margin: %d px", edge_margin)
+    if nms_iou is not None:
+        logger.info("YOLO custom NMS IoU: %.2f", nms_iou)
+    logger.info("Area filter: tolerance=%.0f%%, warmup=%d frames",
+                area_tolerance * 100, area_warmup)
 
     # Create slot tracker
     tracker = create_tracker(config)
@@ -112,6 +123,10 @@ def run_pipeline(config_path: str | Path, cli_overrides: List[str] | None = None
     # Persistent render buffer
     h, w = props["height"], props["width"]
     frame_buffer = np.empty((h, w, 3), dtype=np.uint8)
+
+    # Adaptive area reference (EMA, learned during warmup)
+    area_ref = None
+    area_ema_alpha = 0.1
 
     frame_count = 0
     for frame_idx, frame_bgr in iter_frames(cap, max_frames=max_frames):
@@ -124,7 +139,25 @@ def run_pipeline(config_path: str | Path, cli_overrides: List[str] | None = None
             keypoint_names=kpt_names,
             filter_class=filter_class,
             border_padding_px=border_padding,
+            max_detections=max_animals,
+            edge_margin=edge_margin,
+            area_ref=area_ref if frame_count >= area_warmup else None,
+            area_tolerance=area_tolerance,
+            nms_iou=nms_iou,
         )
+
+        # Update area reference during warmup (EMA from high-confidence detections)
+        if frame_count < area_warmup and detections:
+            good_areas = [d.area() for d in detections if d.conf >= 0.4]
+            if good_areas:
+                avg = sum(good_areas) / len(good_areas)
+                if area_ref is None:
+                    area_ref = avg
+                else:
+                    area_ref = area_ref * (1 - area_ema_alpha) + avg * area_ema_alpha
+            if frame_count == area_warmup - 1 and area_ref is not None:
+                logger.info("Area reference learned: %.0f px² (±%.0f%%)",
+                            area_ref, area_tolerance * 100)
 
         # Step 2: SAM2 segmentation (on original frame, with corrected boxes)
         masks = segment_from_boxes(sam, frame_rgb, detections, sam_thr, iou_thr)

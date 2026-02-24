@@ -2,7 +2,8 @@
 YOLO inference for the SAM2+YOLO pipeline.
 
 Uses model.track() with BoT-SORT/ByteTrack for stable track IDs across frames.
-Supports pose models (keypoints), class filtering, and border padding.
+Supports pose models (keypoints), class filtering, border padding, and
+multi-stage post-detection filtering (edge margin, adaptive area, max cap).
 """
 
 from __future__ import annotations
@@ -132,6 +133,54 @@ def _parse_results(
     return detections
 
 
+def _filter_edge_margin(
+    detections: List[Detection],
+    edge_margin: int,
+    frame_h: int,
+    frame_w: int,
+) -> List[Detection]:
+    """Reject detections whose centroid is within edge_margin px of the frame border."""
+    kept = []
+    for det in detections:
+        cx, cy = det.center()
+        if (cx < edge_margin or cx > frame_w - edge_margin
+                or cy < edge_margin or cy > frame_h - edge_margin):
+            continue
+        kept.append(det)
+    if len(kept) < len(detections):
+        logger.debug("Edge margin filtered %d → %d detections", len(detections), len(kept))
+    return kept
+
+
+def _filter_by_area(
+    detections: List[Detection],
+    area_ref: float,
+    area_tolerance: float,
+) -> List[Detection]:
+    """Reject detections whose box area deviates too much from the reference."""
+    kept = []
+    for det in detections:
+        a = det.area()
+        if area_ref > 0 and abs(a - area_ref) / area_ref > area_tolerance:
+            continue
+        kept.append(det)
+    if len(kept) < len(detections):
+        logger.debug("Area filter (ref=%.0f, tol=%.0f%%) filtered %d → %d",
+                      area_ref, area_tolerance * 100, len(detections), len(kept))
+    return kept
+
+
+def _cap_max_detections(
+    detections: List[Detection],
+    max_count: int,
+) -> List[Detection]:
+    """Keep only the top max_count detections by confidence."""
+    if len(detections) <= max_count:
+        return detections
+    sorted_dets = sorted(detections, key=lambda d: d.conf, reverse=True)
+    return sorted_dets[:max_count]
+
+
 def detect_and_track(
     model: YOLO,
     frame_rgb: np.ndarray,
@@ -140,11 +189,22 @@ def detect_and_track(
     keypoint_names: Optional[List[str]] = None,
     filter_class: Optional[str] = None,
     border_padding_px: int = 0,
+    max_detections: Optional[int] = None,
+    edge_margin: int = 0,
+    area_ref: Optional[float] = None,
+    area_tolerance: float = 0.4,
+    nms_iou: Optional[float] = None,
 ) -> List[Detection]:
     """Run YOLO detection+tracking on a single frame using model.track().
 
     Uses Ultralytics built-in BoT-SORT or ByteTrack for stable track IDs.
     The tracker maintains state across calls when persist=True.
+
+    After detection, applies a post-detection filter chain (inspired by
+    the reference toolkit's YOLOProcessor):
+      1. Edge margin — reject detections near frame borders
+      2. Adaptive area — reject boxes with abnormal size vs. reference
+      3. Max cap — keep only top-N by confidence
 
     Args:
         model: Loaded YOLO model (detect or pose).
@@ -155,6 +215,14 @@ def detect_and_track(
         keypoint_names: Names for each keypoint index.
         filter_class: Only keep detections of this class name.
         border_padding_px: Mirror-pad frame borders before YOLO.
+        max_detections: Cap output to top-N by confidence. None = no cap.
+        edge_margin: Reject detections whose centroid is within this many
+            pixels of the frame border. 0 = disabled.
+        area_ref: Reference box area (px²) for adaptive area filtering.
+            None = disabled.
+        area_tolerance: Max deviation from area_ref (0.4 = ±40%).
+        nms_iou: Custom NMS IoU threshold. None = YOLO default (~0.7).
+            Lower values (0.3-0.5) suppress merged boxes.
 
     Returns:
         List of Detection objects with .track_id set by the tracker.
@@ -170,13 +238,16 @@ def detect_and_track(
         keypoint_names = DEFAULT_KEYPOINT_NAMES
 
     # model.track() maintains tracker state across frames with persist=True
-    results = model.track(
-        frame_for_yolo,
+    track_kwargs = dict(
         conf=confidence,
         persist=True,
         tracker=tracker_config,
         verbose=False,
     )
+    if nms_iou is not None:
+        track_kwargs["iou"] = nms_iou
+
+    results = model.track(frame_for_yolo, **track_kwargs)
 
     detections = _parse_results(results, keypoint_names, filter_class)
 
@@ -184,6 +255,17 @@ def detect_and_track(
         detections = correct_detections_after_padding(
             detections, border_padding_px, orig_h, orig_w,
         )
+
+    # --- Post-detection filter chain ---
+
+    if edge_margin > 0:
+        detections = _filter_edge_margin(detections, edge_margin, orig_h, orig_w)
+
+    if area_ref is not None:
+        detections = _filter_by_area(detections, area_ref, area_tolerance)
+
+    if max_detections is not None:
+        detections = _cap_max_detections(detections, max_detections)
 
     logger.debug(
         "YOLO tracked %d boxes (conf >= %.2f), track_ids: %s",
