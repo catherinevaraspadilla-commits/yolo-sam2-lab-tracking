@@ -1,8 +1,10 @@
 """
 SAM2+YOLO pipeline entry point.
 
-Processes a video frame-by-frame: YOLO detection -> SAM2 segmentation ->
-fixed-slot tracking -> overlay rendering -> output video.
+Pipeline flow:
+  YOLO model.track() (BoT-SORT) → stable track IDs + boxes + keypoints
+  → SAM2 segmentation per box → Hungarian slot assignment (soft costs)
+  → overlay rendering → output video.
 
 Usage:
     python -m src.pipelines.sam2_yolo.run --config configs/local_quick.yaml
@@ -13,18 +15,21 @@ from __future__ import annotations
 
 import argparse
 import logging
-import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import List
 
 import cv2
 import numpy as np
 
 from src.common.config_loader import load_config, setup_run_dir, setup_logging
-from src.common.io_video import open_video_reader, get_video_properties, create_video_writer, iter_frames
-from src.common.visualization import apply_masks_overlay, draw_centroids, draw_detections, draw_keypoints, draw_text
+from src.common.io_video import (
+    open_video_reader, get_video_properties, create_video_writer, iter_frames,
+)
+from src.common.visualization import (
+    apply_masks_overlay, draw_centroids, draw_detections, draw_keypoints, draw_text,
+)
 from .models_io import load_models
-from .infer_yolo import detect_boxes
+from .infer_yolo import detect_and_track
 from .infer_sam2 import segment_from_boxes
 from .postprocess import create_tracker, postprocess_frame
 
@@ -32,15 +37,7 @@ logger = logging.getLogger(__name__)
 
 
 def run_pipeline(config_path: str | Path, cli_overrides: List[str] | None = None) -> Path:
-    """Run the full SAM2+YOLO video pipeline.
-
-    Args:
-        config_path: Path to the YAML config file.
-        cli_overrides: Optional list of "key=value" override strings.
-
-    Returns:
-        Path to the run directory containing outputs.
-    """
+    """Run the full SAM2+YOLO video pipeline."""
     config = load_config(config_path, cli_overrides)
     run_dir = setup_run_dir(config, tag="sam2_yolo")
     setup_logging(run_dir)
@@ -84,28 +81,35 @@ def run_pipeline(config_path: str | Path, cli_overrides: List[str] | None = None
     sam_thr = config.get("segmentation", {}).get("sam_threshold", 0.0)
     iou_thr = config.get("segmentation", {}).get("mask_iou_threshold", 0.5)
 
+    # Tracker config
+    tracking_cfg = config.get("tracking", {})
+    tracker_yaml = tracking_cfg.get("tracker_config", "botsort.yaml")
+
     colors_raw = config.get("output", {}).get("overlay_colors")
     colors = [tuple(c) for c in colors_raw] if colors_raw else None
     max_frames = config.get("scan", {}).get("max_frames")
 
-    # Log tracking config
-    tracking_cfg = config.get("tracking", {})
+    # Log configuration
     logger.info(
-        "Tracking: max_dist=%.0f, area_thr=%.2f, max_missing=%d, mask_iou=%s",
+        "Tracking: tracker=%s, max_dist=%.0f, max_missing=%d, "
+        "costs(dist=%.2f,iou=%.2f,area=%.2f), threshold=%.2f",
+        tracker_yaml,
         tracking_cfg.get("max_centroid_distance", 150.0),
-        tracking_cfg.get("area_change_threshold", 0.4),
         tracking_cfg.get("max_missing_frames", 5),
-        tracking_cfg.get("use_mask_iou", True),
+        tracking_cfg.get("w_dist", 0.4),
+        tracking_cfg.get("w_iou", 0.4),
+        tracking_cfg.get("w_area", 0.2),
+        tracking_cfg.get("cost_threshold", 0.85),
     )
     if border_padding > 0:
         logger.info("YOLO border padding: %d px (mirror)", border_padding)
     if filter_class:
         logger.info("YOLO class filter: '%s'", filter_class)
 
-    # Create tracker
+    # Create slot tracker
     tracker = create_tracker(config)
 
-    # Persistent render buffer (avoids repeated allocations)
+    # Persistent render buffer
     h, w = props["height"], props["width"]
     frame_buffer = np.empty((h, w, 3), dtype=np.uint8)
 
@@ -113,9 +117,10 @@ def run_pipeline(config_path: str | Path, cli_overrides: List[str] | None = None
     for frame_idx, frame_bgr in iter_frames(cap, max_frames=max_frames):
         frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
 
-        # Step 1: YOLO detection (with optional padding + class filter)
-        detections = detect_boxes(
+        # Step 1: YOLO detection+tracking (BoT-SORT gives stable track IDs)
+        detections = detect_and_track(
             yolo, frame_rgb, det_conf,
+            tracker_config=tracker_yaml,
             keypoint_names=kpt_names,
             filter_class=filter_class,
             border_padding_px=border_padding,
@@ -124,45 +129,46 @@ def run_pipeline(config_path: str | Path, cli_overrides: List[str] | None = None
         # Step 2: SAM2 segmentation (on original frame, with corrected boxes)
         masks = segment_from_boxes(sam, frame_rgb, detections, sam_thr, iou_thr)
 
-        # Step 3: Fixed-slot tracking
-        slot_masks, slot_centroids = postprocess_frame(masks, tracker, config)
+        # Step 3: Slot tracking (YOLO track IDs + Hungarian assignment)
+        slot_masks, slot_centroids = postprocess_frame(
+            masks, detections, tracker, config,
+        )
 
-        # Collect non-None masks for rendering
-        render_masks = [m for m in slot_masks if m is not None]
-        # Build color list matching slot order (skip None slots)
-        render_colors = None
-        if colors:
-            render_colors = [
-                colors[i % len(colors)]
-                for i, m in enumerate(slot_masks) if m is not None
-            ]
+        # Build render lists (skip None slots)
+        render_masks = []
+        render_colors = []
+        render_centroids = []
+        for i in range(tracker.num_slots):
+            if slot_masks[i] is not None:
+                render_masks.append(slot_masks[i])
+                if colors:
+                    render_colors.append(colors[i % len(colors)])
+                if slot_centroids[i] is not None:
+                    render_centroids.append(slot_centroids[i])
 
-        # Step 4: Render overlay into persistent buffer
+        if not render_colors:
+            render_colors = None
+
+        # Step 4: Render overlay
         np.copyto(frame_buffer, frame_rgb)
         frame_out = apply_masks_overlay(frame_buffer, render_masks, colors=render_colors)
         frame_out = draw_detections(frame_out, detections, colors=render_colors)
-        frame_out = draw_keypoints(frame_out, detections, colors=render_colors, min_conf=kpt_min_conf)
-
-        # Draw centroids with slot-aware colors
-        render_centroids = [c for c in slot_centroids if c is not None]
+        frame_out = draw_keypoints(
+            frame_out, detections, colors=render_colors, min_conf=kpt_min_conf,
+        )
         if render_centroids:
             frame_out = draw_centroids(frame_out, render_centroids, colors=render_colors)
 
-        # Status text
         active_count = sum(1 for m in slot_masks if m is not None)
-        debug_info = tracker.get_debug_info()
-        frame_out = draw_text(
-            frame_out,
-            f"Animals: {active_count}/{max_animals}",
-        )
+        frame_out = draw_text(frame_out, f"Animals: {active_count}/{max_animals}")
 
-        # Write output (convert back to BGR)
+        # Write output
         frame_out_bgr = cv2.cvtColor(frame_out, cv2.COLOR_RGB2BGR)
         writer.write(frame_out_bgr)
 
         frame_count += 1
         if frame_count % 50 == 0:
-            logger.info("Processed %d frames | %s", frame_count, debug_info)
+            logger.info("Processed %d frames | %s", frame_count, tracker.get_debug_info())
 
     cap.release()
     writer.release()

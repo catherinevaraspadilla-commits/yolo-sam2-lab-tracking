@@ -82,10 +82,13 @@ export:
 
 # --- Tracking ---
 tracking:
+  tracker_config: botsort.yaml
   max_centroid_distance: 150.0
-  area_change_threshold: 0.4
   max_missing_frames: 5
-  use_mask_iou: true
+  w_dist: 0.4
+  w_iou: 0.4
+  w_area: 0.2
+  cost_threshold: 0.85
 
 # --- Video output ---
 output:

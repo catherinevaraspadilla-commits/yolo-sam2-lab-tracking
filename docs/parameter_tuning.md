@@ -202,43 +202,34 @@ what it controls, and how to adjust it based on common error symptoms.
 
 ## 3. Tracking Parameters
 
-### 3.1 `tracking.max_centroid_distance`
+### 3.1 `tracking.tracker_config`
+
+| | |
+|---|---|
+| **Config key** | `tracking.tracker_config` |
+| **Default** | `"botsort.yaml"` |
+| **Options** | `"botsort.yaml"`, `"bytetrack.yaml"`, or path to custom YAML |
+| **Where in code** | `infer_yolo.py` → `model.track(tracker=tracker_config)` |
+| **What it does** | Selects the Ultralytics multi-object tracker. BoT-SORT has Kalman filtering + motion compensation. ByteTrack is simpler/faster. |
+
+See [pipeline_improvements.md](pipeline_improvements.md) for BoT-SORT config details.
+
+---
+
+### 3.2 `tracking.max_centroid_distance`
 
 | | |
 |---|---|
 | **Config key** | `tracking.max_centroid_distance` |
 | **Default** | `150.0` (pixels) |
 | **Range** | `50.0` – `500.0` |
-| **Where in code** | `tracking.py` → `FixedSlotTracker.__init__(max_distance=...)` |
-| **What it does** | Gate 1: maximum pixel distance a centroid can move between frames for a valid match. |
-
-**Tuning:**
+| **Where in code** | `tracking.py` → `SlotTracker._compute_cost()` — normalizes distance |
+| **What it does** | Normalization constant for distance cost. `dist_cost = min(dist / max_distance, 1.0)`. NOT a hard cutoff — distances beyond this saturate at cost=1.0 but are still considered. |
 
 | Symptom | Action | Example |
 |---------|--------|---------|
-| Colors swap between rats (ID switching) | **Lower** to 80–100 | `tracking.max_centroid_distance=100` |
-| Fast-moving rat loses identity constantly | **Raise** to 200–300 | `tracking.max_centroid_distance=250` |
-
-**Note:** Resolution-dependent. 150px at 640x480 is ~23% of frame width.
-
----
-
-### 3.2 `tracking.area_change_threshold`
-
-| | |
-|---|---|
-| **Config key** | `tracking.area_change_threshold` |
-| **Default** | `0.4` |
-| **Range** | `0.0` – `1.0` |
-| **Where in code** | `tracking.py` → `FixedSlotTracker.update()` — `area_ratio = abs(curr - prev) / prev` |
-| **What it does** | Gate 2: rejects a match if the mask area changed by more than this fraction. 0.4 = +/-40% change tolerated. |
-
-**Tuning:**
-
-| Symptom | Action | Example |
-|---------|--------|---------|
-| ID swaps when rat partially enters/leaves frame | **Raise** to 0.5–0.6 (more permissive) | `tracking.area_change_threshold=0.6` |
-| Rats swap identities when similar size | **Lower** to 0.2–0.3 (stricter) | `tracking.area_change_threshold=0.25` |
+| Colors swap between rats | **Lower** to 80–100 (makes distance cost more sensitive) | `tracking.max_centroid_distance=100` |
+| Fast-moving rat loses identity | **Raise** to 200–300 | `tracking.max_centroid_distance=250` |
 
 ---
 
@@ -249,35 +240,51 @@ what it controls, and how to adjust it based on common error symptoms.
 | **Config key** | `tracking.max_missing_frames` |
 | **Default** | `5` |
 | **Range** | `1` – `30` |
-| **Where in code** | `tracking.py` → `FixedSlotTracker.update()` — releases slot when `missing_count > max_missing_frames` |
-| **What it does** | Number of consecutive frames a slot can go without a match before its identity is released. Prevents color swaps from brief detection gaps at borders. |
-
-**Tuning:**
+| **Where in code** | `tracking.py` → `SlotTracker.update()` — releases slot after this many consecutive misses |
+| **What it does** | How many frames a slot survives without a match. Prevents color swap from brief YOLO misses. |
 
 | Symptom | Action | Example |
 |---------|--------|---------|
-| Color flickers when rat touches border | **Raise** to 8–10 | `tracking.max_missing_frames=10` |
-| Ghost identity sticks around too long after rat leaves | **Lower** to 2–3 | `tracking.max_missing_frames=2` |
-
-**Trade-off:** Higher = more robust to gaps but slower to free up stale slots.
+| Color flickers at border | **Raise** to 8–10 | `tracking.max_missing_frames=10` |
+| Ghost slot lingers too long | **Lower** to 2–3 | `tracking.max_missing_frames=2` |
 
 ---
 
-### 3.4 `tracking.use_mask_iou`
+### 3.4 `tracking.w_dist`, `tracking.w_iou`, `tracking.w_area`
 
 | | |
 |---|---|
-| **Config key** | `tracking.use_mask_iou` |
-| **Default** | `true` |
-| **Where in code** | `tracking.py` → `FixedSlotTracker.update()` — ranks candidates by mask IoU when enabled |
-| **What it does** | When multiple mask candidates pass both gates (distance + area), rank them by mask IoU with the previous frame's mask instead of just using nearest distance. |
+| **Config keys** | `tracking.w_dist`, `tracking.w_iou`, `tracking.w_area` |
+| **Defaults** | `0.4`, `0.4`, `0.2` |
+| **Where in code** | `tracking.py` → `SlotTracker._compute_cost()` |
+| **What they do** | Weights for the three components of the Hungarian assignment cost matrix. Should roughly sum to 1.0. |
 
-**Tuning:**
+- `w_dist`: weight for centroid distance (normalized by `max_centroid_distance`)
+- `w_iou`: weight for `1 - mask_iou` (shape similarity with previous frame)
+- `w_area`: weight for area change ratio (**soft penalty**, NOT hard veto)
 
 | Symptom | Action |
 |---------|--------|
-| IDs swap when centroids are close but shapes differ | Keep `true` |
-| Need maximum speed | Set `false` to skip IoU computation |
+| ID swaps during close contact (centroids very close) | Raise `w_iou=0.5`, lower `w_dist=0.3` — prioritize shape over position |
+| ID swaps at border (mask shape changes) | Raise `w_dist=0.5`, lower `w_iou=0.3` — prioritize position |
+| Area changes causing issues | Lower `w_area=0.1` or `0.0` to ignore area |
+
+---
+
+### 3.5 `tracking.cost_threshold`
+
+| | |
+|---|---|
+| **Config key** | `tracking.cost_threshold` |
+| **Default** | `0.85` |
+| **Range** | `0.0` – `1.0` |
+| **Where in code** | `tracking.py` → `SlotTracker._hungarian_assign()` — rejects assignments above this |
+| **What it does** | Maximum cost for a valid assignment. Pairs with cost above this are treated as unmatched. |
+
+| Symptom | Action |
+|---------|--------|
+| Masks being assigned to wrong slots | **Lower** to 0.6–0.7 (stricter) |
+| Valid matches being rejected | **Raise** to 0.9–1.0 (more permissive) |
 
 ---
 

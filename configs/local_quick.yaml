@@ -126,27 +126,29 @@ export:
 
 # --- Tracking ---
 tracking:
-  # Maximum pixel distance between centroids for identity matching.
-  # If a centroid moves more than this between frames, identity is lost.
-  # Depends on resolution and movement speed. 150px typical for 640x480.
+  # Ultralytics tracker: "botsort.yaml" (default, ReID + Kalman) or
+  # "bytetrack.yaml" (simpler, faster). Can also be a path to custom YAML.
+  tracker_config: botsort.yaml
+
+  # Maximum pixel distance for centroid-based cost normalization.
+  # Used as denominator: dist_cost = min(dist / max_centroid_distance, 1.0).
+  # 150px typical for 640x480. Scale up for higher resolutions.
   max_centroid_distance: 150.0
 
-  # Maximum fractional area change to accept a match.
-  # 0.4 = mask area can change at most +/-40% between frames.
-  # Lower = stricter (rejects matches where mask size changes a lot).
-  # Higher = more permissive (tolerates zoom/partial visibility changes).
-  area_change_threshold: 0.4
-
-  # Number of consecutive frames a slot can go without a match before
-  # being released. Prevents color swap when a rat briefly leaves the
-  # frame or is missed by YOLO for 1-2 frames.
-  # Higher = more tolerant to gaps, but may hold stale slots longer.
+  # Consecutive frames a slot survives without a match before release.
+  # Prevents color swap when YOLO briefly misses a rat (e.g., at borders).
   max_missing_frames: 5
 
-  # Use mask IoU between current and previous frame to rank match
-  # candidates (when multiple pass the distance+area gate).
-  # Helps when centroids jump due to border cropping.
-  use_mask_iou: true
+  # Hungarian assignment cost weights (must sum to ~1.0).
+  # w_dist: centroid distance (normalized by max_centroid_distance)
+  # w_iou:  1 - mask_iou with previous frame (shape similarity)
+  # w_area: area change ratio (soft penalty, NOT hard veto)
+  w_dist: 0.4
+  w_iou: 0.4
+  w_area: 0.2
+
+  # Assignments with total cost above this are rejected (unmatched).
+  cost_threshold: 0.85
 
 # --- Video output ---
 output:

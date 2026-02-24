@@ -27,6 +27,7 @@ class Detection:
     conf: float
     class_name: Optional[str] = None
     keypoints: Optional[List[Keypoint]] = None
+    track_id: Optional[int] = None
 
     def center(self) -> Tuple[float, float]:
         """Return the (cx, cy) center of the bounding box."""
