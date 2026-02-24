@@ -2,7 +2,7 @@
 SAM2+YOLO pipeline entry point.
 
 Processes a video frame-by-frame: YOLO detection -> SAM2 segmentation ->
-tracking -> overlay rendering -> output video.
+fixed-slot tracking -> overlay rendering -> output video.
 
 Usage:
     python -m src.pipelines.sam2_yolo.run --config configs/local_quick.yaml
@@ -15,9 +15,10 @@ import argparse
 import logging
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import cv2
+import numpy as np
 
 from src.common.config_loader import load_config, setup_run_dir, setup_logging
 from src.common.io_video import open_video_reader, get_video_properties, create_video_writer, iter_frames
@@ -25,7 +26,7 @@ from src.common.visualization import apply_masks_overlay, draw_centroids, draw_d
 from .models_io import load_models
 from .infer_yolo import detect_boxes
 from .infer_sam2 import segment_from_boxes
-from .postprocess import postprocess_frame
+from .postprocess import create_tracker, postprocess_frame
 
 logger = logging.getLogger(__name__)
 
@@ -72,57 +73,96 @@ def run_pipeline(config_path: str | Path, cli_overrides: List[str] | None = None
     )
 
     # Parse config values
-    det_conf = config.get("detection", {}).get("confidence", 0.25)
+    det_cfg = config.get("detection", {})
+    det_conf = det_cfg.get("confidence", 0.25)
+    max_animals = det_cfg.get("max_animals", 2)
+    kpt_names = det_cfg.get("keypoint_names")
+    kpt_min_conf = det_cfg.get("keypoint_min_conf", 0.3)
+    filter_class = det_cfg.get("filter_class")
+    border_padding = det_cfg.get("yolo_border_padding_px", 0)
+
     sam_thr = config.get("segmentation", {}).get("sam_threshold", 0.0)
     iou_thr = config.get("segmentation", {}).get("mask_iou_threshold", 0.5)
-    max_animals = config.get("detection", {}).get("max_animals", 2)
-    strategy = config.get("tracking", {}).get("strategy", "tracking")
+
     colors_raw = config.get("output", {}).get("overlay_colors")
     colors = [tuple(c) for c in colors_raw] if colors_raw else None
     max_frames = config.get("scan", {}).get("max_frames")
-    kpt_names = config.get("detection", {}).get("keypoint_names")
-    kpt_min_conf = config.get("detection", {}).get("keypoint_min_conf", 0.3)
 
-    # Tracking state
-    prev_centroids: List[Tuple[float, float]] = []
+    # Log tracking config
+    tracking_cfg = config.get("tracking", {})
+    logger.info(
+        "Tracking: max_dist=%.0f, area_thr=%.2f, max_missing=%d, mask_iou=%s",
+        tracking_cfg.get("max_centroid_distance", 150.0),
+        tracking_cfg.get("area_change_threshold", 0.4),
+        tracking_cfg.get("max_missing_frames", 5),
+        tracking_cfg.get("use_mask_iou", True),
+    )
+    if border_padding > 0:
+        logger.info("YOLO border padding: %d px (mirror)", border_padding)
+    if filter_class:
+        logger.info("YOLO class filter: '%s'", filter_class)
+
+    # Create tracker
+    tracker = create_tracker(config)
+
+    # Persistent render buffer (avoids repeated allocations)
+    h, w = props["height"], props["width"]
+    frame_buffer = np.empty((h, w, 3), dtype=np.uint8)
 
     frame_count = 0
     for frame_idx, frame_bgr in iter_frames(cap, max_frames=max_frames):
         frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
 
-        # Step 1: YOLO detection (boxes + keypoints if pose model)
-        detections = detect_boxes(yolo, frame_rgb, det_conf, keypoint_names=kpt_names)
-
-        # Step 2: SAM2 segmentation
-        masks = segment_from_boxes(sam, frame_rgb, detections, sam_thr, iou_thr)
-
-        # Step 3: Post-processing (filtering + tracking)
-        if strategy == "tracking":
-            ordered_masks, centroids = postprocess_frame(masks, prev_centroids, config)
-            prev_centroids = [c for c in centroids if c is not None]
-        else:
-            from src.common.tracking import filter_masks
-            ordered_masks = filter_masks(masks, iou_thr, max_animals)
-            centroids = []
-
-        # Step 4: Render overlay
-        frame_out = apply_masks_overlay(frame_rgb, ordered_masks, colors=colors)
-        frame_out = draw_detections(frame_out, detections, colors=colors)
-        frame_out = draw_keypoints(frame_out, detections, colors=colors, min_conf=kpt_min_conf)
-        if strategy == "tracking" and centroids:
-            frame_out = draw_centroids(frame_out, centroids, colors=colors)
-        frame_out = draw_text(
-            frame_out,
-            f"Animals: {len(ordered_masks)}/{max_animals}",
+        # Step 1: YOLO detection (with optional padding + class filter)
+        detections = detect_boxes(
+            yolo, frame_rgb, det_conf,
+            keypoint_names=kpt_names,
+            filter_class=filter_class,
+            border_padding_px=border_padding,
         )
 
-        # Write output
+        # Step 2: SAM2 segmentation (on original frame, with corrected boxes)
+        masks = segment_from_boxes(sam, frame_rgb, detections, sam_thr, iou_thr)
+
+        # Step 3: Fixed-slot tracking
+        slot_masks, slot_centroids = postprocess_frame(masks, tracker, config)
+
+        # Collect non-None masks for rendering
+        render_masks = [m for m in slot_masks if m is not None]
+        # Build color list matching slot order (skip None slots)
+        render_colors = None
+        if colors:
+            render_colors = [
+                colors[i % len(colors)]
+                for i, m in enumerate(slot_masks) if m is not None
+            ]
+
+        # Step 4: Render overlay into persistent buffer
+        np.copyto(frame_buffer, frame_rgb)
+        frame_out = apply_masks_overlay(frame_buffer, render_masks, colors=render_colors)
+        frame_out = draw_detections(frame_out, detections, colors=render_colors)
+        frame_out = draw_keypoints(frame_out, detections, colors=render_colors, min_conf=kpt_min_conf)
+
+        # Draw centroids with slot-aware colors
+        render_centroids = [c for c in slot_centroids if c is not None]
+        if render_centroids:
+            frame_out = draw_centroids(frame_out, render_centroids, colors=render_colors)
+
+        # Status text
+        active_count = sum(1 for m in slot_masks if m is not None)
+        debug_info = tracker.get_debug_info()
+        frame_out = draw_text(
+            frame_out,
+            f"Animals: {active_count}/{max_animals}",
+        )
+
+        # Write output (convert back to BGR)
         frame_out_bgr = cv2.cvtColor(frame_out, cv2.COLOR_RGB2BGR)
         writer.write(frame_out_bgr)
 
         frame_count += 1
         if frame_count % 50 == 0:
-            logger.info("Processed %d frames", frame_count)
+            logger.info("Processed %d frames | %s", frame_count, debug_info)
 
     cap.release()
     writer.release()

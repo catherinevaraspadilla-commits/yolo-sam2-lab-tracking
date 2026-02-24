@@ -74,9 +74,14 @@ bash download_ckpts.sh
 # Back to project root
 cd ~/Balbi/yolo-sam2-lab-tracking
 
-scp s4948012@bunya.rcc.uq.edu.au:~/Balbi/yolo-sam2-lab-tracking/outputs/runs/2026-02-23_191503_sam2_yolo/overlays/overlay.avi `
+scp s4948012@bunya.rcc.uq.edu.au:~/Balbi/yolo-sam2-lab-tracking/outputs/overlay.avi `
  "C:\Users\CatherineVaras\Downloads\yolo-sam2-lab-tracking\outputs"
+
+ scp s4948012@bunya.rcc.uq.edu.au:~/Balbi/yolo-sam2-lab-tracking/outputs/runs/2026-02-23_191503_sam2_yolo/overlays/overlay.avi ` "C:\Users\CatherineVaras\Downloads\yolo-sam2-lab-tracking\outputs"
 ```
+
+2026-02-23_195107_sam2_yolo
+
 
 ## Running Inference
 
@@ -107,15 +112,100 @@ source .venv/bin/activate
 python scripts/extract_frames.py all --config configs/hpc_full.yaml
 ```
 
+## GPU vs CPU — Cómo elegir device
+
+El parámetro `models.device` en el YAML controla dónde corren los modelos:
+
+| Valor | Qué hace |
+|-------|----------|
+| `"auto"` | Usa GPU si hay CUDA disponible, si no cae a CPU |
+| `"cuda"` | Fuerza GPU (falla si no hay CUDA) |
+| `"cpu"` | Fuerza CPU (funciona siempre, pero SAM2 es muy lento) |
+
+### Si te salió CPU en Bunya
+
+Si usaste `local_quick.yaml` y viste `Using device: cpu`, es porque:
+1. Estás en el **login node** (no tiene GPU) — necesitas pedir un nodo GPU con `salloc`
+2. No cargaste el módulo CUDA — corre `module load cuda` antes de activar el venv
+3. PyTorch no tiene CUDA — reinstalar con `pip install torch --index-url https://download.pytorch.org/whl/cu118`
+
+Diagnóstico rápido:
+```bash
+nvidia-smi                    # Debe mostrar la GPU
+python -c "import torch; print('CUDA:', torch.cuda.is_available())"   # Debe decir True
+```
+
+### Correr interactivamente con GPU (forma rápida)
+
+```bash
+# 1) Pedir un nodo GPU
+salloc --partition=gpu_cuda --qos=gpu --gres=gpu:1 --time=02:00:00 --mem=16G
+srun --pty bash
+
+# 2) Setup del ambiente
+module load python/3.10.4
+module load cuda
+cd ~/Balbi/yolo-sam2-lab-tracking
+source .venv/bin/activate
+
+# 3) Correr con GPU — usa cualquier config + override del device
+python -m src.pipelines.sam2_yolo.run --config configs/local_quick.yaml models.device=cuda
+```
+
+Esto usa SAM2 tiny + max_frames=150 pero en GPU. Ideal para experimentar rápido.
+
+### Overrides útiles desde la línea de comandos
+
+Cualquier parámetro del YAML se puede sobreescribir con `clave.subclave=valor`:
+
+```bash
+# GPU + tiny + solo 300 frames
+python -m src.pipelines.sam2_yolo.run --config configs/local_quick.yaml \
+    models.device=cuda scan.max_frames=300
+
+# GPU + modelo large + video completo
+python -m src.pipelines.sam2_yolo.run --config configs/local_quick.yaml \
+    models.device=cuda \
+    models.sam2_checkpoint=models/sam2/segment-anything-2/checkpoints/sam2.1_hiera_large.pt \
+    models.sam2_config=configs/sam2.1/sam2.1_hiera_l.yaml \
+    scan.max_frames=null
+
+# Cambiar confianza de YOLO
+python -m src.pipelines.sam2_yolo.run --config configs/local_quick.yaml \
+    models.device=cuda detection.confidence=0.4
+
+# Solo mostrar keypoints con alta confianza
+python -m src.pipelines.sam2_yolo.run --config configs/local_quick.yaml \
+    models.device=cuda detection.keypoint_min_conf=0.5
+
+# Usar otro video
+python -m src.pipelines.sam2_yolo.run --config configs/local_quick.yaml \
+    models.device=cuda video_path=data/raw/otro_video.mp4
+```
+
+### Resumen de overrides
+
+| Override | Efecto |
+|----------|--------|
+| `models.device=cuda` | Forzar GPU |
+| `models.device=cpu` | Forzar CPU |
+| `scan.max_frames=300` | Procesar solo 300 frames |
+| `scan.max_frames=null` | Procesar todo el video |
+| `detection.confidence=0.4` | Subir umbral de detección YOLO |
+| `detection.keypoint_min_conf=0.5` | Solo keypoints con alta confianza |
+| `video_path=data/raw/video.mp4` | Usar otro video de entrada |
+
 ## Config Differences (local vs HPC)
 
 | Parameter | local_quick.yaml | hpc_full.yaml |
 |-----------|-----------------|---------------|
 | video_path | `data/clips/output-6s.mp4` | `data/raw/original.mp4` |
 | SAM2 model | tiny (~39 MB) | large (~225 MB) |
-| device | auto | cuda |
-| max_frames | 150 | null (all) |
+| device | auto (cae a CPU si no hay GPU) | cuda (requiere GPU) |
+| max_frames | 150 | null (todo) |
 | sampling target | 50 frames | 200 frames |
+
+Puedes usar cualquiera de los dos en Bunya, combinando con overrides según necesites.
 
 ## Output Location
 

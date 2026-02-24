@@ -46,12 +46,14 @@ detection:
   keypoint_names:
     - tail_tip
     - tail_base
-    - back
+    - tail_start
     - mid_body
-    - neck
-    - ear
     - nose
+    - right_ear
+    - left_ear
   keypoint_min_conf: 0.3
+  filter_class: null
+  yolo_border_padding_px: 0
 
 # --- Segmentation (SAM2) ---
 segmentation:
@@ -80,8 +82,10 @@ export:
 
 # --- Tracking ---
 tracking:
-  strategy: tracking
   max_centroid_distance: 150.0
+  area_change_threshold: 0.4
+  max_missing_frames: 5
+  use_mask_iou: true
 
 # --- Video output ---
 output:

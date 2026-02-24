@@ -56,14 +56,23 @@ detection:
   keypoint_names:
     - tail_tip
     - tail_base
-    - back
+    - tail_start
     - mid_body
-    - neck
-    - ear
     - nose
+    - right_ear
+    - left_ear
 
   # Minimum confidence to render a keypoint. Range: [0.0, 1.0].
   keypoint_min_conf: 0.3
+
+  # Only keep YOLO detections of this class. null = keep all classes.
+  # Set to "ratas" to filter out non-rat detections.
+  filter_class: null
+
+  # Mirror-pad frame borders before running YOLO (pixels).
+  # Helps detect rats partially outside the frame.
+  # 0 = no padding, 32-64 = recommended for border issues.
+  yolo_border_padding_px: 0
 
 # --- Segmentation (SAM2) ---
 segmentation:
@@ -117,13 +126,27 @@ export:
 
 # --- Tracking ---
 tracking:
-  # Strategy: "simple" (no identity persistence) | "tracking" (centroid-based matching)
-  strategy: tracking
-
   # Maximum pixel distance between centroids for identity matching.
   # If a centroid moves more than this between frames, identity is lost.
   # Depends on resolution and movement speed. 150px typical for 640x480.
   max_centroid_distance: 150.0
+
+  # Maximum fractional area change to accept a match.
+  # 0.4 = mask area can change at most +/-40% between frames.
+  # Lower = stricter (rejects matches where mask size changes a lot).
+  # Higher = more permissive (tolerates zoom/partial visibility changes).
+  area_change_threshold: 0.4
+
+  # Number of consecutive frames a slot can go without a match before
+  # being released. Prevents color swap when a rat briefly leaves the
+  # frame or is missed by YOLO for 1-2 frames.
+  # Higher = more tolerant to gaps, but may hold stale slots longer.
+  max_missing_frames: 5
+
+  # Use mask IoU between current and previous frame to rank match
+  # candidates (when multiple pass the distance+area gate).
+  # Helps when centroids jump due to border cropping.
+  use_mask_iou: true
 
 # --- Video output ---
 output:
