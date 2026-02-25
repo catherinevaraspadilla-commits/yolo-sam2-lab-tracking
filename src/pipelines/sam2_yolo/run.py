@@ -4,7 +4,7 @@ SAM2+YOLO pipeline entry point.
 Pipeline flow:
   YOLO model.track() (BoT-SORT) → stable track IDs + boxes + keypoints
   → SAM2 segmentation per box → Hungarian slot assignment (soft costs)
-  → overlay rendering → output video.
+  → optional contact classification → overlay rendering → output video.
 
 Usage:
     python -m src.pipelines.sam2_yolo.run --config configs/local_quick.yaml
@@ -14,17 +14,20 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import gc
 import logging
 from pathlib import Path
 from typing import List
 
 import cv2
 import numpy as np
+import torch
 
 from src.common.config_loader import load_config, setup_run_dir, setup_logging
 from src.common.io_video import (
     open_video_reader, get_video_properties, create_video_writer, iter_frames,
 )
+from src.common.contacts import ContactTracker
 from src.common.visualization import (
     apply_masks_overlay, draw_centroids, draw_detections, draw_keypoints, draw_text,
 )
@@ -116,6 +119,19 @@ def run_pipeline(config_path: str | Path, cli_overrides: List[str] | None = None
     # Create slot tracker
     tracker = create_tracker(config)
 
+    # Contact classification (optional)
+    contacts_enabled = config.get("contacts", {}).get("enabled", False)
+    contact_tracker = None
+    if contacts_enabled:
+        contact_tracker = ContactTracker(
+            output_dir=run_dir / "contacts",
+            fps=props["fps"],
+            num_slots=max_animals,
+            video_path=str(video_path),
+            config=config,
+        )
+        logger.info("Contact classification enabled → %s", run_dir / "contacts")
+
     # Persistent render buffer
     h, w = props["height"], props["width"]
     frame_buffer = np.empty((h, w, 3), dtype=np.uint8)
@@ -143,6 +159,13 @@ def run_pipeline(config_path: str | Path, cli_overrides: List[str] | None = None
             masks, detections, tracker, config,
         )
 
+        # Step 3b: Contact classification (if enabled)
+        contact_events = []
+        if contact_tracker is not None:
+            contact_events = contact_tracker.update(
+                detections, slot_masks, slot_centroids, frame_idx,
+            )
+
         # Build render lists (skip None slots)
         render_masks = []
         render_colors = []
@@ -169,7 +192,25 @@ def run_pipeline(config_path: str | Path, cli_overrides: List[str] | None = None
             frame_out = draw_centroids(frame_out, render_centroids, colors=render_colors)
 
         active_count = sum(1 for m in slot_masks if m is not None)
-        frame_out = draw_text(frame_out, f"Animals: {active_count}/{max_animals}")
+        status_text = f"Animals: {active_count}/{max_animals}"
+
+        # Add contact info to overlay
+        if contact_events:
+            for ev in contact_events:
+                if ev.contact_type is not None:
+                    status_text += f"  | {ev.contact_type}"
+                    # Draw line between centroids during contact
+                    ca = slot_centroids[ev.rat_a_slot]
+                    cb = slot_centroids[ev.rat_b_slot]
+                    if ca is not None and cb is not None:
+                        cv2.line(
+                            frame_out,
+                            (int(ca[0]), int(ca[1])),
+                            (int(cb[0]), int(cb[1])),
+                            (255, 255, 0), 2,
+                        )
+
+        frame_out = draw_text(frame_out, status_text)
 
         # Write output
         frame_out_bgr = cv2.cvtColor(frame_out, cv2.COLOR_RGB2BGR)
@@ -179,8 +220,22 @@ def run_pipeline(config_path: str | Path, cli_overrides: List[str] | None = None
         if frame_count % 50 == 0:
             logger.info("Processed %d frames | %s", frame_count, tracker.get_debug_info())
 
+        # Periodic GPU memory cleanup to prevent OOM on long videos
+        if frame_count % 100 == 0 and torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            gc.collect()
+
     cap.release()
     writer.release()
+
+    # Finalize contact analysis (write bouts CSV, session JSON, PDF report)
+    if contact_tracker is not None:
+        summary = contact_tracker.finalize()
+        total_bouts = sum(
+            v.get("total_bouts", 0)
+            for v in summary.get("contact_type_summary", {}).values()
+        )
+        logger.info("Contact analysis: %d bouts detected", total_bouts)
 
     logger.info("Pipeline complete. %d frames processed.", frame_count)
     logger.info("Overlay video: %s", out_video_path)

@@ -1,10 +1,11 @@
 #!/bin/bash
 #SBATCH --job-name=sam2-yolo-infer
 #SBATCH --partition=gpu_cuda
+#SBATCH --qos=gpu
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=4
-#SBATCH --mem=32G
-#SBATCH --time=04:00:00
+#SBATCH --mem=64G
+#SBATCH --time=06:00:00
 #SBATCH --output=outputs/slurm/infer_%j.out
 #SBATCH --error=outputs/slurm/infer_%j.err
 
@@ -33,13 +34,11 @@ echo "Config:    $CONFIG"
 echo "=========================="
 
 # Navigate to project root
-cd ~/yolo-sam2-lab-tracking
+cd ~/Balbi/yolo-sam2-lab-tracking
 
-# Activate virtual environment
+# Load modules and activate virtual environment
+module load python/3.10.4-gcccore-11.3.0 2>/dev/null || true
 source .venv/bin/activate
-
-# Load CUDA module (Bunya-specific)
-module load cuda 2>/dev/null || true
 
 # Create slurm output directory
 mkdir -p outputs/slurm
