@@ -60,7 +60,7 @@ and what we chose not to adopt.
 
 **Our implementation:** Was implemented as `_cap_max_detections()`. Tested with `max_detections=max_animals`.
 
-**Why removed:** Redundant with our mask deduplication in `postprocess.py` which already caps masks to `max_animals` using IoU-based filtering. The YOLO-level cap was too aggressive — it could drop a valid detection before SAM2 even ran.
+**Why removed:** Redundant with our mask deduplication in `postprocess.py` which already caps maspruebasratslabs-c02t9/3ks to `max_animals` using IoU-based filtering. The YOLO-level cap was too aggressive — it could drop a valid detection before SAM2 even ran.
 
 **Status:** Removed from code entirely.
 

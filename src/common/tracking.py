@@ -263,9 +263,6 @@ class SlotTracker:
             self._assign_to_slot(si, masks[mi], centroids[mi], areas[mi], track_ids[mi])
             matched_masks.add(mi)
             matched_slots.add(si)
-            # Remove from unmatched list
-            if mi in unmatched_mask_idx:
-                unmatched_mask_idx.remove(mi)
 
     def _compute_cost(self, centroid, area, mask, slot: SlotState) -> float:
         """Compute soft assignment cost between a mask and a slot.

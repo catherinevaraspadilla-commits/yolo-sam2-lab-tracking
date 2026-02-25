@@ -119,7 +119,7 @@ def draw_detections(
 
         # Build label text
         label = det.class_name or "obj"
-        label = f"{label} {det.conf:.2f}"
+        label = f"{label} {det.conf:.2f} id={getattr(det, 'track_id', 'NA')}"
 
         # Draw label background + text
         (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, font_scale, 1)

@@ -11,6 +11,7 @@
 
 # --- Input video ---
 video_path: data/clips/output-10s.mp4
+#data/raw/original.mp4
 
 # --- Output ---
 # Run artifacts are written to: <output_dir>/<run_id>/
@@ -177,7 +178,7 @@ output:
 scan:
   # Maximum frames to process. null = process entire video.
   # Set to a small number for quick tests (e.g., 150 = ~6s at 25fps).
-  max_frames: 150
+  max_frames: null
 
 # --- Roboflow (for upload script) ---
 roboflow:
