@@ -16,20 +16,18 @@
 # Splits a video into N chunks and processes each on a separate GPU.
 # Each array task computes its frame range from SLURM_ARRAY_TASK_ID.
 #
-# Usage:
-#   # 4 chunks (default config):
+# Usage (sam2_yolo — default):
 #   sbatch --array=0-3 slurm/run_chunks.sbatch
 #
-#   # With overrides (same syntax you use normally):
-#   sbatch --array=0-3 --export=ALL,OVERRIDES="video_path=data/raw/original_120s.avi contacts.enabled=true" slurm/run_chunks.sbatch
+# Usage (reference pipeline):
+#   PIPELINE=src.pipelines.reference.run CONFIG=configs/hpc_reference.yaml \
+#     sbatch --array=0-3 slurm/run_chunks.sbatch
 #
-#   # SAM2 tiny + custom video:
-#   sbatch --array=0-3 --export=ALL,OVERRIDES="video_path=data/raw/original_120s.avi models.sam2_checkpoint=models/sam2/segment-anything-2/checkpoints/sam2.1_hiera_tiny.pt models.sam2_config=configs/sam2.1/sam2.1_hiera_t.yaml contacts.enabled=true",TOTAL_FRAMES=3000 slurm/run_chunks.sbatch
+# With overrides:
+#   OVERRIDES="video_path=data/raw/original_120s.avi contacts.enabled=true" \
+#     sbatch --array=0-3 slurm/run_chunks.sbatch
 #
-#   # 8 chunks for a longer video:
-#   sbatch --array=0-7 slurm/run_chunks.sbatch
-#
-#   # Limit concurrent GPU jobs (e.g., max 2 at a time):
+# Limit concurrent GPU jobs (e.g., max 2 at a time):
 #   sbatch --array=0-3%2 slurm/run_chunks.sbatch
 #
 # After all chunks finish, merge results:
@@ -41,6 +39,8 @@ set -euo pipefail
 
 # --- Configuration ---
 CONFIG="${CONFIG:-configs/hpc_full.yaml}"
+PIPELINE="${PIPELINE:-src.pipelines.sam2_yolo.run}"  # Pipeline module to run
+                                          # Override: PIPELINE=src.pipelines.reference.run
 TOTAL_FRAMES="${TOTAL_FRAMES:-30000}"    # Total frames in the video
                                           # 20 min @ 25fps = 30000
                                           # Override: --export=...,TOTAL_FRAMES=15000
@@ -60,15 +60,16 @@ if [ $END_FRAME -gt $TOTAL_FRAMES ]; then
     END_FRAME=$TOTAL_FRAMES
 fi
 
-echo "=== SAM2+YOLO Chunk Processing ==="
+echo "=== Chunk Processing ==="
 echo "Job ID:       $SLURM_JOB_ID"
 echo "Array task:   $CHUNK_ID / $NUM_CHUNKS"
 echo "Node:         $SLURM_NODELIST"
 echo "GPU:          $CUDA_VISIBLE_DEVICES"
+echo "Pipeline:     $PIPELINE"
 echo "Config:       $CONFIG"
 echo "Overrides:    ${OVERRIDES:-<none>}"
 echo "Frame range:  $START_FRAME → $END_FRAME ($FRAMES_PER_CHUNK frames)"
-echo "=================================="
+echo "========================="
 
 # --- Setup environment ---
 cd ~/Balbi/yolo-sam2-lab-tracking
@@ -80,7 +81,7 @@ mkdir -p outputs/slurm
 
 # --- Run pipeline for this chunk ---
 # shellcheck disable=SC2086
-python -m src.pipelines.sam2_yolo.run \
+python -m $PIPELINE \
     --config "$CONFIG" \
     --start-frame $START_FRAME \
     --end-frame $END_FRAME \
