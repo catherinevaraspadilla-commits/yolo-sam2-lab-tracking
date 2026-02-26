@@ -292,7 +292,6 @@ Processed 100 frames | slot0:tid=1(miss=0) | slot1:tid=2(miss=0)
 
 ## Future Improvements
 
-- **YOLO-only mode:** Skip SAM2 for fast experiments. Use YOLO boxes for tracking.
 - **Frame skip / stride:** Process every Nth frame for speed.
 - **Temporal smoothing:** EMA on box/keypoint coordinates.
 - **SAM2 VideoPredictor:** Use temporal mask propagation for more stable

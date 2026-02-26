@@ -220,21 +220,65 @@ class SlotTracker:
         return result_masks, result_centroids
 
     def _match_by_track_id(self, masks, track_ids, centroids, areas):
-        """Match masks to slots by YOLO track ID (O(1) lookup)."""
-        matched_masks: set = set()
-        matched_slots: set = set()
-        unmatched_mask_idx: list = []
+        """Match masks to slots by YOLO track ID, with swap guard.
+
+        When all masks map to known track IDs, validate that the YOLO-proposed
+        assignment is spatially consistent. For N=2, compare straight vs swapped
+        cost — if swapped is cheaper, YOLO has likely swapped IDs during a
+        crossing, so reject all track_id matches and let Hungarian resolve it.
+        """
+        # Collect masks that have a known track_id → slot mapping
+        tid_matches = []  # list of (mask_idx, slot_idx, track_id)
+        no_tid = []       # mask indices with no known track_id
 
         for mi in range(len(masks)):
             tid = track_ids[mi]
             if tid is not None and tid in self._track_to_slot:
                 si = self._track_to_slot[tid]
-                if si not in matched_slots:
-                    self._assign_to_slot(si, masks[mi], centroids[mi], areas[mi], tid)
-                    matched_masks.add(mi)
-                    matched_slots.add(si)
-                    continue
-            unmatched_mask_idx.append(mi)
+                tid_matches.append((mi, si, tid))
+            else:
+                no_tid.append(mi)
+
+        # --- Swap guard: validate when we have exactly 2 track_id matches ---
+        if len(tid_matches) == 2:
+            mi_a, si_a, tid_a = tid_matches[0]
+            mi_b, si_b, tid_b = tid_matches[1]
+
+            # Only check if they map to different slots (normal case)
+            if si_a != si_b:
+                # Cost of YOLO's proposed assignment (straight)
+                cost_straight = (
+                    self._compute_cost(centroids[mi_a], areas[mi_a], masks[mi_a], self.slots[si_a])
+                    + self._compute_cost(centroids[mi_b], areas[mi_b], masks[mi_b], self.slots[si_b])
+                )
+                # Cost of swapped assignment
+                cost_swapped = (
+                    self._compute_cost(centroids[mi_a], areas[mi_a], masks[mi_a], self.slots[si_b])
+                    + self._compute_cost(centroids[mi_b], areas[mi_b], masks[mi_b], self.slots[si_a])
+                )
+
+                if cost_swapped < cost_straight:
+                    # YOLO swapped IDs — reject all track_id matches
+                    logger.info(
+                        "Swap guard triggered: straight_cost=%.3f > swapped_cost=%.3f "
+                        "(tids %s→slots %s). Delegating to Hungarian.",
+                        cost_straight, cost_swapped,
+                        [tid_a, tid_b], [si_a, si_b],
+                    )
+                    return set(), set(), list(range(len(masks)))
+
+        # --- No swap detected: accept track_id matches ---
+        matched_masks: set = set()
+        matched_slots: set = set()
+        unmatched_mask_idx: list = list(no_tid)
+
+        for mi, si, tid in tid_matches:
+            if si not in matched_slots:
+                self._assign_to_slot(si, masks[mi], centroids[mi], areas[mi], tid)
+                matched_masks.add(mi)
+                matched_slots.add(si)
+            else:
+                unmatched_mask_idx.append(mi)
 
         return matched_masks, matched_slots, unmatched_mask_idx
 

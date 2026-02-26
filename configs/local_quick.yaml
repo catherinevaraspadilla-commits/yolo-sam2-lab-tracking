@@ -82,7 +82,7 @@ detection:
 
   # Custom NMS IoU threshold. null = use YOLO default (~0.7).
   # Lower values (0.3-0.5) suppress merged boxes when animals touch.
-  nms_iou: null
+  nms_iou: 0.5
 
 # --- Segmentation (SAM2) ---
 segmentation:
@@ -172,9 +172,10 @@ contacts:
 
 # --- Tracking ---
 tracking:
-  # Ultralytics tracker: "botsort.yaml" (default, ReID + Kalman) or
-  # "bytetrack.yaml" (simpler, faster). Can also be a path to custom YAML.
-  tracker_config: botsort.yaml
+  # Ultralytics tracker config. Use our custom config optimized for lab rats
+  # (higher track_buffer, stricter new_track_thresh, no GMC for static camera).
+  # See docs/tracking-techniques-analysis.md for parameter details.
+  tracker_config: configs/trackers/lab_rats_botsort.yaml
 
   # Maximum pixel distance for centroid-based cost normalization.
   # Used as denominator: dist_cost = min(dist / max_centroid_distance, 1.0).
@@ -194,7 +195,8 @@ tracking:
   w_area: 0.2
 
   # Assignments with total cost above this are rejected (unmatched).
-  cost_threshold: 0.85
+  # Lowered from 0.85 to accept slightly imperfect matches during occlusion.
+  cost_threshold: 0.75
 
 # --- Video output ---
 output:
