@@ -1,0 +1,90 @@
+# ============================================================================
+# Local Reference Pipeline Configuration
+# ============================================================================
+# Uses SAM2ImagePredictor + IdentityMatcher (ported from reference pipeline).
+# YOLO runs in detect-only mode (no BoT-SORT tracking).
+# Centroid fallback keeps tracking when YOLO loses a rat during occlusion.
+#
+# Usage:
+#   python -m src.pipelines.reference.run --config configs/local_reference.yaml
+#   python -m src.pipelines.reference.run --config configs/local_reference.yaml \
+#       video_path=data/clips/output-10s.mp4 contacts.enabled=true
+# ============================================================================
+
+# --- Input video ---
+video_path: data/clips/output-10s.mp4
+
+# --- Output ---
+output_dir: outputs/runs
+
+# --- Models ---
+models:
+  yolo_path: models/yolo/yolov8lrata.pt
+
+  # SAM2 tiny for local testing
+  sam2_checkpoint: models/sam2/segment-anything-2/checkpoints/sam2.1_hiera_tiny.pt
+  sam2_config: configs/sam2.1/sam2.1_hiera_t.yaml
+
+  device: auto
+
+# --- Detection (YOLO — detect-only, no tracking) ---
+detection:
+  confidence: 0.25
+  max_animals: 2
+  keypoint_names:
+    - tail_tip
+    - tail_base
+    - tail_start
+    - mid_body
+    - nose
+    - right_ear
+    - left_ear
+  keypoint_min_conf: 0.3
+  filter_class: null
+  nms_iou: 0.5
+
+# --- Segmentation (SAM2) ---
+segmentation:
+  sam_threshold: 0.0
+  mask_iou_threshold: 0.5
+
+# --- Identity Matcher (replaces SlotTracker) ---
+# Ported from reference pipeline. Uses centroid distance + area tolerance
+# for identity assignment. No YOLO track IDs.
+identity_matcher:
+  # Maximum centroid distance (px) between frames for a valid match.
+  # Higher = more tolerant of fast movement. 60px typical for 640x480.
+  proximity_threshold: 60.0
+
+  # Maximum relative area change for a valid match.
+  # 0.4 = +-40%. Prevents matching a rat to a partial mask.
+  area_tolerance: 0.4
+
+# --- Social contact classification ---
+contacts:
+  enabled: false
+  min_keypoint_conf: 0.3
+  contact_zone_bl: 0.3
+  proximity_zone_bl: 1.0
+  fallback_body_length_px: 120
+  sbs_mask_iou_min: 0.02
+  sbs_max_velocity_px: 5.0
+  sbs_parallel_cos_min: 0.7
+  follow_radius_bl: 0.5
+  follow_min_speed_px: 3.0
+  follow_alignment_cos: 0.7
+  follow_min_frames: 5
+  bout_max_gap_frames: 3
+  bout_min_duration_frames: 2
+  mask_overlap_warning: 0.5
+
+# --- Video output ---
+output:
+  video_codec: XVID
+  overlay_colors:
+    - [0, 255, 0, 150]    # Green
+    - [255, 0, 0, 150]    # Red
+
+# --- Scan limits ---
+scan:
+  max_frames: null
