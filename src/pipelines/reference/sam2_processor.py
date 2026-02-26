@@ -2,12 +2,9 @@
 SAM2 segmentation with centroid fallback — ported from reference pipeline.
 
 Hybrid segmentation strategy:
-  1. Primary: use YOLO detection boxes as SAM2 prompts (accurate when YOLO works)
-  2. Fallback: use previous-frame centroid as SAM2 point prompt (when YOLO misses)
-
-This is the key difference vs the sam2_yolo pipeline: when YOLO loses a rat
-during occlusion, the centroid fallback keeps SAM2 tracking it using the
-last-known position as a point prompt.
+  1. Primary: use YOLO detection boxes + keypoint prompts as SAM2 prompts
+  2. When boxes overlap: add negative keypoints from other detections
+  3. Fallback: use previous-frame centroid as SAM2 point prompt (when YOLO misses)
 """
 
 from __future__ import annotations
@@ -25,6 +22,18 @@ from .identity_matcher import IdentityMatcher
 logger = logging.getLogger(__name__)
 
 
+def _boxes_overlap(a: Detection, b: Detection) -> bool:
+    """Check if two detection boxes have any intersection."""
+    return a.x1 < b.x2 and a.x2 > b.x1 and a.y1 < b.y2 and a.y2 > b.y1
+
+
+def _extract_keypoints(det: Detection, min_conf: float) -> List[List[float]]:
+    """Extract high-confidence keypoint coordinates from a detection."""
+    if det.keypoints is None:
+        return []
+    return [[kp.x, kp.y] for kp in det.keypoints if kp.conf >= min_conf]
+
+
 def segment_frame(
     predictor: SAM2ImagePredictor,
     frame_rgb: np.ndarray,
@@ -32,12 +41,15 @@ def segment_frame(
     matcher: IdentityMatcher,
     sam_threshold: float = 0.0,
     max_entities: int = 2,
+    kpt_min_conf: float = 0.3,
 ) -> Tuple[List[np.ndarray], List[float]]:
-    """Segment a frame with SAM2 using YOLO boxes + centroid fallback.
+    """Segment a frame with SAM2 using YOLO boxes + keypoints + centroid fallback.
 
     Flow:
         1. set_image(frame_rgb) — encode the frame once
-        2. For each YOLO detection: predict(box=...) → mask
+        2. For each YOLO detection: predict(box + keypoints) → mask
+           - If boxes overlap with another detection, add negative keypoints
+             from the other detection to help SAM2 distinguish them
         3. If YOLO detected fewer objects than active slots:
            for each active slot without a YOLO mask nearby,
            predict(point_coords=prev_centroid) → fallback mask
@@ -50,6 +62,7 @@ def segment_frame(
         matcher: IdentityMatcher (provides prev_centroids for fallback).
         sam_threshold: Threshold for SAM2 logit masks.
         max_entities: Expected number of objects to track.
+        kpt_min_conf: Minimum keypoint confidence for SAM2 prompts.
 
     Returns:
         (masks, scores) — all masks from boxes + fallback centroids.
@@ -62,12 +75,35 @@ def segment_frame(
     all_masks: List[np.ndarray] = []
     all_scores: List[float] = []
 
-    # --- Step 1: Segment from YOLO detection boxes ---
-    for det in detections[:max_entities]:
+    # --- Step 1: Segment from YOLO detection boxes + keypoints ---
+    active_dets = detections[:max_entities]
+    for i, det in enumerate(active_dets):
         box = np.array([det.x1, det.y1, det.x2, det.y2])
+
+        # Build point prompts from keypoints
+        pos_points = _extract_keypoints(det, kpt_min_conf)
+        neg_points: List[List[float]] = []
+
+        # When boxes overlap, add negative points from the other rat's keypoints
+        for j, other_det in enumerate(active_dets):
+            if j == i:
+                continue
+            if _boxes_overlap(det, other_det):
+                neg_points.extend(_extract_keypoints(other_det, kpt_min_conf))
+
+        # Combine positive + negative prompts
+        if pos_points or neg_points:
+            all_points = pos_points + neg_points
+            all_labels = [1] * len(pos_points) + [0] * len(neg_points)
+            point_coords = np.array(all_points, dtype=np.float32)
+            point_labels = np.array(all_labels, dtype=np.int32)
+        else:
+            point_coords = None
+            point_labels = None
+
         raw_masks, scores, _ = predictor.predict(
-            point_coords=None,
-            point_labels=None,
+            point_coords=point_coords,
+            point_labels=point_labels,
             box=box,
             multimask_output=False,
         )

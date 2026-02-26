@@ -40,7 +40,7 @@ from src.common.visualization import (
 )
 from src.pipelines.sam2_yolo.models_io import load_models
 from src.pipelines.sam2_yolo.infer_yolo import detect_only
-from .identity_matcher import IdentityMatcher, filter_duplicates
+from .identity_matcher import IdentityMatcher, filter_duplicates, resolve_overlaps
 from .sam2_processor import segment_frame
 
 logger = logging.getLogger(__name__)
@@ -157,11 +157,12 @@ def run_pipeline(
             nms_iou=nms_iou,
         )
 
-        # Step 2: SAM2 segmentation with centroid fallback
+        # Step 2: SAM2 segmentation with centroid fallback + keypoint prompts
         all_masks, all_scores = segment_frame(
             sam, frame_rgb, detections, matcher,
             sam_threshold=sam_thr,
             max_entities=max_animals,
+            kpt_min_conf=kpt_min_conf,
         )
 
         # Step 3: Filter duplicates
@@ -174,9 +175,17 @@ def run_pipeline(
             unique_masks, unique_scores,
         )
 
+        # Step 4b: Resolve overlapping pixels between masks
+        resolve_overlaps(slot_masks, slot_centroids)
+
         # Step 5: Match YOLO detections to slots for keypoint association
         # Find which detection best matches each slot by centroid proximity
         slot_dets = _match_dets_to_slots(detections, slot_centroids, max_animals)
+
+        # Set track_id on matched detections so labels show slot index
+        for slot_idx, det in enumerate(slot_dets):
+            if det is not None:
+                det.track_id = slot_idx + 1
 
         # Step 6: Contact classification (if enabled)
         contact_events = []
