@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/bash --login
 #SBATCH --job-name=reference-infer
 #SBATCH --partition=gpu_cuda
 #SBATCH --qos=gpu
@@ -13,14 +13,12 @@
 # Reference Pipeline on Bunya HPC
 # ============================================================================
 #
-# Uses SAM2ImagePredictor + IdentityMatcher (ported from reference pipeline).
-# YOLO detect-only (no BoT-SORT). Centroid fallback for occlusion recovery.
+# IMPORTANT: You must pass your account with --account or -A:
+#   sbatch --account=a_YOUR_GROUP slurm/run_reference.sbatch
 #
-# Usage:
-#   sbatch slurm/run_reference.sbatch
-#
-#   # Override config and parameters:
-#   sbatch --export=ALL,CONFIG=configs/hpc_reference.yaml,OVERRIDES="video_path=data/raw/other.mp4 contacts.enabled=true" slurm/run_reference.sbatch
+# With overrides:
+#   OVERRIDES="video_path=data/raw/original_120s.avi contacts.enabled=true" \
+#     sbatch --account=a_YOUR_GROUP slurm/run_reference.sbatch
 #
 # ============================================================================
 
