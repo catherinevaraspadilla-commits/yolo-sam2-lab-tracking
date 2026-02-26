@@ -89,22 +89,36 @@ def create_video_writer(
 def iter_frames(
     cap: cv2.VideoCapture,
     max_frames: Optional[int] = None,
+    start_frame: int = 0,
+    end_frame: Optional[int] = None,
 ) -> Iterator[Tuple[int, Any]]:
     """Iterate over video frames.
 
     Args:
         cap: An opened cv2.VideoCapture.
-        max_frames: Stop after this many frames. None = read all.
+        max_frames: Stop after this many frames (from start_frame). None = read all.
+        start_frame: First frame index to yield (0-based). Frames before this
+            are skipped via seek. Default 0.
+        end_frame: Stop before this frame index (exclusive). None = read to end.
+            When both max_frames and end_frame are set, the stricter limit wins.
 
     Yields:
-        (frame_index, frame_bgr) tuples.
+        (frame_index, frame_bgr) tuples. frame_index is the absolute position
+        in the video (not relative to start_frame).
     """
-    idx = 0
+    if start_frame > 0:
+        cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+
+    idx = start_frame
+    count = 0
     while True:
-        if max_frames is not None and idx >= max_frames:
+        if max_frames is not None and count >= max_frames:
+            break
+        if end_frame is not None and idx >= end_frame:
             break
         ret, frame = cap.read()
         if not ret:
             break
         yield idx, frame
         idx += 1
+        count += 1

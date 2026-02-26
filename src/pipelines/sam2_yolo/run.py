@@ -39,15 +39,32 @@ from .postprocess import create_tracker, postprocess_frame
 logger = logging.getLogger(__name__)
 
 
-def run_pipeline(config_path: str | Path, cli_overrides: List[str] | None = None) -> Path:
-    """Run the full SAM2+YOLO video pipeline."""
+def run_pipeline(
+    config_path: str | Path,
+    cli_overrides: List[str] | None = None,
+    start_frame: int = 0,
+    end_frame: int | None = None,
+    chunk_id: int | None = None,
+) -> Path:
+    """Run the full SAM2+YOLO video pipeline.
+
+    Args:
+        config_path: Path to YAML config file.
+        cli_overrides: Optional key=value config overrides.
+        start_frame: First frame to process (0-based). Default 0.
+        end_frame: Stop before this frame (exclusive). None = process to end.
+        chunk_id: If set, appended to run directory name for chunk parallelism.
+    """
     config = load_config(config_path, cli_overrides)
-    run_dir = setup_run_dir(config, tag="sam2_yolo")
+    tag = f"sam2_yolo_chunk{chunk_id}" if chunk_id is not None else "sam2_yolo"
+    run_dir = setup_run_dir(config, tag=tag)
     setup_logging(run_dir)
 
     logger.info("Starting SAM2+YOLO pipeline")
     logger.info("Config: %s", config_path)
     logger.info("Run directory: %s", run_dir)
+    if start_frame > 0 or end_frame is not None:
+        logger.info("Frame range: %d → %s", start_frame, end_frame or "end")
 
     # Load models
     yolo, sam = load_models(config)
@@ -137,7 +154,9 @@ def run_pipeline(config_path: str | Path, cli_overrides: List[str] | None = None
     frame_buffer = np.empty((h, w, 3), dtype=np.uint8)
 
     frame_count = 0
-    for frame_idx, frame_bgr in iter_frames(cap, max_frames=max_frames):
+    for frame_idx, frame_bgr in iter_frames(
+        cap, max_frames=max_frames, start_frame=start_frame, end_frame=end_frame,
+    ):
         frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
 
         # Step 1: YOLO detection+tracking (BoT-SORT gives stable track IDs)
@@ -252,12 +271,30 @@ def main() -> None:
         help="Path to YAML config file (e.g., configs/local_quick.yaml).",
     )
     parser.add_argument(
+        "--start-frame", type=int, default=0,
+        help="First frame to process (0-based). Default: 0.",
+    )
+    parser.add_argument(
+        "--end-frame", type=int, default=None,
+        help="Stop before this frame (exclusive). Default: process to end.",
+    )
+    parser.add_argument(
+        "--chunk-id", type=int, default=None,
+        help="Chunk identifier for parallel processing. Appended to run dir name.",
+    )
+    parser.add_argument(
         "overrides", nargs="*",
         help="Optional config overrides as key=value (e.g., detection.confidence=0.5).",
     )
     args = parser.parse_args()
 
-    run_pipeline(args.config, args.overrides or None)
+    run_pipeline(
+        args.config,
+        args.overrides or None,
+        start_frame=args.start_frame,
+        end_frame=args.end_frame,
+        chunk_id=args.chunk_id,
+    )
 
 
 if __name__ == "__main__":

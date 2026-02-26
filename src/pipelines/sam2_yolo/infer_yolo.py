@@ -228,3 +228,46 @@ def detect_and_track(
         [d.track_id for d in detections],
     )
     return detections
+
+
+def detect_only(
+    model: YOLO,
+    frame_rgb: np.ndarray,
+    confidence: float,
+    keypoint_names: Optional[List[str]] = None,
+    filter_class: Optional[str] = None,
+    nms_iou: Optional[float] = None,
+) -> List[Detection]:
+    """Run YOLO detection WITHOUT tracking (no BoT-SORT, no track IDs).
+
+    Uses model() instead of model.track() — faster and simpler.
+    Intended for pipelines where identity is managed externally (e.g., SAM2 Video).
+    All returned detections have track_id=None.
+
+    Args:
+        model: Loaded YOLO model (detect or pose).
+        frame_rgb: Frame in RGB format (H, W, 3).
+        confidence: Minimum confidence threshold.
+        keypoint_names: Names for each keypoint index.
+        filter_class: Only keep detections of this class name.
+        nms_iou: Custom NMS IoU threshold. None = YOLO default (~0.7).
+
+    Returns:
+        List of Detection objects with .track_id = None.
+    """
+    if keypoint_names is None:
+        keypoint_names = DEFAULT_KEYPOINT_NAMES
+
+    kwargs = dict(conf=confidence, verbose=False)
+    if nms_iou is not None:
+        kwargs["iou"] = nms_iou
+
+    results = model(frame_rgb, **kwargs)
+
+    detections = _parse_results(results, keypoint_names, filter_class)
+
+    logger.debug(
+        "YOLO detected %d boxes (conf >= %.2f, no tracking)",
+        len(detections), confidence,
+    )
+    return detections
