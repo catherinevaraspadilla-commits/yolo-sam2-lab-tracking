@@ -41,7 +41,8 @@ EXTRA_OVERRIDES="${4:-}"
 
 # --- Step 0: Validate GPU count ---
 # Count only "GPU N:" lines, not MIG sub-device lines
-NUM_GPUS=$(nvidia-smi -L 2>/dev/null | grep -c "^GPU")
+# Note: grep -c returns exit code 1 when count=0, so || true prevents pipefail
+NUM_GPUS=$(nvidia-smi -L 2>/dev/null | grep -c "^GPU" || true)
 if [ "$NUM_GPUS" -eq 0 ]; then
     echo "ERROR: No GPUs detected. Are you inside a salloc with --gres=gpu:N?"
     exit 1
