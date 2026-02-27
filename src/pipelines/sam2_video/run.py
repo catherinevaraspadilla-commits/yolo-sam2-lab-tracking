@@ -22,6 +22,7 @@ import gc
 import logging
 import shutil
 import tempfile
+from datetime import date
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -208,7 +209,10 @@ def run_pipeline(
     overlays_dir.mkdir(parents=True, exist_ok=True)
     codec = config.get("output", {}).get("video_codec", "XVID")
     ext = ".avi" if codec == "XVID" else ".mp4"
-    out_video_path = overlays_dir / f"overlay{ext}"
+    sam_ckpt = config.get("models", {}).get("sam2_checkpoint", "")
+    model_name = Path(sam_ckpt).stem if sam_ckpt else "sam2"
+    today = date.today().strftime("%Y-%m-%d")
+    out_video_path = overlays_dir / f"sam2_video_{model_name}_{today}{ext}"
     writer = create_video_writer(out_video_path, fps, w, h, codec=codec)
 
     # Contact classification (optional)

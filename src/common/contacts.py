@@ -517,7 +517,7 @@ class ContactTracker:
         # Build slot → detection mapping
         slot_dets: Dict[int, Detection] = {}
         for det in detections:
-            if det.track_id is None:
+            if det is None or det.track_id is None:
                 continue
             for si in range(self.num_slots):
                 # Match by checking if this slot has a mask and the detection's

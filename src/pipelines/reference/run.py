@@ -23,6 +23,7 @@ from __future__ import annotations
 import argparse
 import gc
 import logging
+from datetime import date
 from pathlib import Path
 from typing import List
 
@@ -91,7 +92,10 @@ def run_pipeline(
     overlays_dir.mkdir(parents=True, exist_ok=True)
     codec = config.get("output", {}).get("video_codec", "XVID")
     ext = ".avi" if codec == "XVID" else ".mp4"
-    out_video_path = overlays_dir / f"overlay{ext}"
+    sam_ckpt = config.get("models", {}).get("sam2_checkpoint", "")
+    model_name = Path(sam_ckpt).stem if sam_ckpt else "sam2"
+    today = date.today().strftime("%Y-%m-%d")
+    out_video_path = overlays_dir / f"reference_{model_name}_{today}{ext}"
     writer = create_video_writer(
         out_video_path, props["fps"], props["width"], props["height"], codec=codec,
     )
