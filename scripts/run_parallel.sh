@@ -39,6 +39,21 @@ NUM_CHUNKS="${2:-4}"
 CONFIG="${3:-configs/hpc_reference.yaml}"
 EXTRA_OVERRIDES="${4:-}"
 
+# --- Step 0: Validate GPU count ---
+NUM_GPUS=$(nvidia-smi -L 2>/dev/null | wc -l)
+if [ "$NUM_GPUS" -eq 0 ]; then
+    echo "ERROR: No GPUs detected. Are you inside a salloc with --gres=gpu:N?"
+    exit 1
+fi
+if [ "$NUM_CHUNKS" -gt "$NUM_GPUS" ]; then
+    echo "WARNING: Requested $NUM_CHUNKS chunks but only $NUM_GPUS GPU(s) available."
+    echo "         Reducing to $NUM_GPUS chunks."
+    NUM_CHUNKS=$NUM_GPUS
+fi
+
+# Load ffmpeg for video merging (stream copy, no re-encode)
+module load ffmpeg 2>/dev/null || true
+
 # --- Step 1: Create batch directory ---
 BATCH_ID="$(date +%Y-%m-%d_%H%M%S)_reference_batch"
 BATCH_DIR="outputs/runs/$BATCH_ID"

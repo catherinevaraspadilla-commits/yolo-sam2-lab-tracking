@@ -37,6 +37,7 @@ external/
 # --- Run outputs ---
 outputs/runs/
 outputs/slurm/
+outputs/olds/
 
 # --- Legacy directories (migrated) ---
 bunya/
