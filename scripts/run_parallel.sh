@@ -12,17 +12,21 @@
 #   $1 - Video path (required)
 #   $2 - Number of chunks/GPUs (default: 4)
 #   $3 - Config file (default: configs/hpc_reference.yaml)
+#   $4 - Extra overrides (optional, space-separated key=value)
 #
-# Prerequisites:
-#   - Be inside a salloc session with N GPUs allocated
-#   - Python environment activated
-#   - Module loaded
+# What it does:
+#   1. Reads total frames from the video automatically
+#   2. Divides into N equal chunks
+#   3. Launches each chunk on a different GPU in parallel
+#   4. Waits for all to finish
+#   5. Auto-merges results (video + contacts)
+#   6. Prints the final merged video path
 #
 # ============================================================================
 
 set -euo pipefail
 
-VIDEO="${1:?Usage: bash scripts/run_parallel.sh <video_path> [num_chunks] [config]}"
+VIDEO="${1:?Usage: bash scripts/run_parallel.sh <video_path> [num_chunks] [config] [overrides]}"
 NUM_CHUNKS="${2:-4}"
 CONFIG="${3:-configs/hpc_reference.yaml}"
 EXTRA_OVERRIDES="${4:-}"
@@ -72,6 +76,7 @@ mkdir -p outputs/slurm
 
 # --- Step 3: Launch chunks in parallel ---
 PIDS=()
+LOGS=()
 for i in $(seq 0 $((NUM_CHUNKS - 1))); do
     START=$((i * FRAMES_PER_CHUNK))
     END=$(( (i + 1) * FRAMES_PER_CHUNK ))
@@ -80,7 +85,8 @@ for i in $(seq 0 $((NUM_CHUNKS - 1))); do
     fi
 
     LOG="outputs/slurm/chunk_${i}.log"
-    echo "  Chunk $i: frames $START → $END (GPU $i) → $LOG"
+    LOGS+=("$LOG")
+    echo "  Chunk $i: frames $START -> $END (GPU $i) -> $LOG"
 
     CUDA_VISIBLE_DEVICES=$i python -m src.pipelines.reference.run \
         --config "$CONFIG" \
@@ -95,7 +101,7 @@ done
 
 echo ""
 echo "All $NUM_CHUNKS chunks launched. Waiting..."
-echo "  Monitor: tail -f outputs/slurm/chunk_0.log"
+echo "  Monitor progress: tail -f outputs/slurm/chunk_0.log"
 echo ""
 
 # --- Step 4: Wait and report ---
@@ -110,12 +116,31 @@ for i in $(seq 0 $((NUM_CHUNKS - 1))); do
 done
 
 echo ""
-if [ $FAILED -eq 0 ]; then
-    echo "=== All chunks completed successfully ==="
-    echo ""
-    echo "Next step - merge results:"
-    echo "  python scripts/merge_chunks.py outputs/runs/*reference_chunk*/"
-else
-    echo "=== $FAILED chunk(s) failed ==="
-    echo "Check logs in outputs/slurm/"
+
+if [ $FAILED -gt 0 ]; then
+    echo "=== $FAILED chunk(s) failed. Check logs in outputs/slurm/ ==="
+    exit 1
 fi
+
+# --- Step 5: Find run directories from logs and auto-merge ---
+echo "=== All chunks completed. Merging... ==="
+
+CHUNK_DIRS=()
+for i in $(seq 0 $((NUM_CHUNKS - 1))); do
+    # Extract "Run directory: /path/to/..." from each chunk's log
+    RUN_DIR=$(grep -oP 'Run directory: \K.*' "${LOGS[$i]}" 2>/dev/null | head -1)
+    if [ -n "$RUN_DIR" ]; then
+        CHUNK_DIRS+=("$RUN_DIR")
+        echo "  Chunk $i: $RUN_DIR"
+    else
+        echo "  Chunk $i: WARNING - could not find run directory in log"
+    fi
+done
+
+if [ ${#CHUNK_DIRS[@]} -eq 0 ]; then
+    echo "ERROR: No run directories found in logs. Merge manually."
+    exit 1
+fi
+
+echo ""
+python scripts/merge_chunks.py "${CHUNK_DIRS[@]}"

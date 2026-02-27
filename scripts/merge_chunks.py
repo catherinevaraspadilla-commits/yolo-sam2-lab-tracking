@@ -88,11 +88,10 @@ def merge_overlay_videos(chunk_dirs: List[Path], output_dir: Path) -> Path | Non
     for cdir in chunk_dirs:
         overlays = cdir / "overlays"
         if overlays.exists():
-            for ext in [".avi", ".mp4"]:
-                v = overlays / f"overlay{ext}"
-                if v.exists():
-                    video_paths.append(v)
-                    break
+            # Find any video file in overlays/ (supports new naming: pipeline_model_date.avi)
+            found = sorted(overlays.glob("*.avi")) + sorted(overlays.glob("*.mp4"))
+            if found:
+                video_paths.append(found[0])  # take the first video found
 
     if not video_paths:
         logger.warning("No overlay videos found to merge")
@@ -104,9 +103,10 @@ def merge_overlay_videos(chunk_dirs: List[Path], output_dir: Path) -> Path | Non
         shutil.copy2(video_paths[0], out_path)
         return out_path
 
-    # Try ffmpeg concat
+    # Try ffmpeg concat — use same name as chunk video but with _merged suffix
     ext = video_paths[0].suffix
-    out_path = output_dir / "overlays" / f"overlay_merged{ext}"
+    base_name = video_paths[0].stem  # e.g. "reference_sam2.1_hiera_large_2026-02-27"
+    out_path = output_dir / "overlays" / f"{base_name}_merged{ext}"
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     # Write concat list file
@@ -260,6 +260,14 @@ def main():
                 out_log.write(log_path.read_text(encoding="utf-8"))
 
     logger.info("Merge complete → %s", output_dir)
+
+    # Print final video location for easy copy-paste
+    merged_videos = list((output_dir / "overlays").glob("*_merged.*")) if (output_dir / "overlays").exists() else []
+    if merged_videos:
+        print(f"\n{'='*60}")
+        print(f"  MERGED VIDEO: {merged_videos[0]}")
+        print(f"  OUTPUT DIR:   {output_dir}")
+        print(f"{'='*60}\n")
 
 
 if __name__ == "__main__":
