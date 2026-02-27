@@ -177,7 +177,15 @@ fi
 echo ""
 python scripts/merge_chunks.py "${CHUNK_DIRS[@]}" -o "$BATCH_DIR"
 
-# --- Step 7: Print download command ---
+# --- Step 7: Compress contacts into tar.gz ---
+CONTACTS_TAR=""
+if [ -d "$BATCH_DIR/contacts" ]; then
+    CONTACTS_TAR="$BATCH_DIR/contacts_${BATCH_ID}.tar.gz"
+    tar -czf "$CONTACTS_TAR" -C "$BATCH_DIR" contacts/
+    echo "Contacts compressed: $CONTACTS_TAR"
+fi
+
+# --- Step 8: Print download commands ---
 REMOTE_USER="${USER:-s4948012}"
 REMOTE_HOST="bunya.rcc.uq.edu.au"
 ABS_BATCH_DIR="$(cd "$BATCH_DIR" && pwd)"
@@ -189,6 +197,13 @@ if [ -n "$MERGED_VIDEO" ]; then
     ABS_MERGED="$(cd "$(dirname "$MERGED_VIDEO")" && pwd)/$(basename "$MERGED_VIDEO")"
 fi
 
+ABS_CONTACTS=""
+if [ -n "$CONTACTS_TAR" ]; then
+    ABS_CONTACTS="$(cd "$(dirname "$CONTACTS_TAR")" && pwd)/$(basename "$CONTACTS_TAR")"
+fi
+
+LOCAL_DIR="C:\\Users\\CatherineVaras\\Downloads\\yolo-sam2-lab-tracking\\outputs"
+
 echo ""
 echo "============================================================"
 echo "  BATCH COMPLETE: $BATCH_ID"
@@ -197,11 +212,18 @@ echo "  BATCH DIR:      $ABS_BATCH_DIR"
 if [ -n "$ABS_MERGED" ]; then
     echo "  MERGED VIDEO:   $ABS_MERGED"
 fi
+if [ -n "$ABS_CONTACTS" ]; then
+    echo "  CONTACTS:       $ABS_CONTACTS"
+fi
 echo "============================================================"
 echo ""
+echo "# Download results (PowerShell):"
 if [ -n "$ABS_MERGED" ]; then
-    echo "# Download merged video (PowerShell):"
     echo "scp ${REMOTE_USER}@${REMOTE_HOST}:${ABS_MERGED} \\"
-    echo "  \"C:\\Users\\CatherineVaras\\Downloads\\yolo-sam2-lab-tracking\\outputs\\\""
-    echo ""
+    echo "  \"${LOCAL_DIR}\\\""
 fi
+if [ -n "$ABS_CONTACTS" ]; then
+    echo "scp ${REMOTE_USER}@${REMOTE_HOST}:${ABS_CONTACTS} \\"
+    echo "  \"${LOCAL_DIR}\\\""
+fi
+echo ""
