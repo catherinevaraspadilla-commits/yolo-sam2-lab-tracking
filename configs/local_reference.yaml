@@ -49,16 +49,20 @@ segmentation:
   mask_iou_threshold: 0.5
 
 # --- Identity Matcher (replaces SlotTracker) ---
-# Ported from reference pipeline. Uses centroid distance + area tolerance
-# for identity assignment. No YOLO track IDs.
+# Uses Hungarian assignment with soft cost (distance + mask IoU + area).
+# Includes N=2 state machine: SEPARATE ↔ MERGED for close-interaction handling.
+# No YOLO track IDs — identity is purely spatial + shape-based.
 identity_matcher:
-  # Maximum centroid distance (px) between frames for a valid match.
-  # Higher = more tolerant of fast movement. 60px typical for 640x480.
-  proximity_threshold: 60.0
+  # Normalization distance (px) for soft distance cost.
+  # Not a hard cutoff — distances beyond this just saturate at cost=1.0.
+  proximity_threshold: 150.0
 
-  # Maximum relative area change for a valid match.
-  # 0.4 = +-40%. Prevents matching a rat to a partial mask.
+  # Used in soft area cost (not a hard veto). Hard veto only at 5× change.
   area_tolerance: 0.4
+
+  # Max frames in MERGED state before force-resetting to SEPARATE.
+  # 30 frames ≈ 1 second at 30fps. Most close interactions resolve faster.
+  max_merged_frames: 30
 
 # --- Social contact classification ---
 contacts:

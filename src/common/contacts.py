@@ -1021,4 +1021,108 @@ class ContactTracker:
             pdf.savefig(fig)
             plt.close(fig)
 
+            # ── Load per-frame CSV for data-driven pages ──
+            try:
+                import pandas as pd
+                df = pd.read_csv(self._csv_path)
+            except Exception:
+                df = pd.DataFrame()
+
+            if not df.empty and "time_sec" in df.columns:
+                # ── Page 6: Distance Over Time ──
+                fig, ax = plt.subplots(figsize=(14, 4))
+                zone_colors = {"contact": "#2ca02c", "proximity": "#ffcc00", "independent": "#dddddd"}
+                # Paint zone background as contiguous spans (fast)
+                if "zone" in df.columns:
+                    zones = df["zone"].values
+                    times = df["time_sec"].values
+                    i = 0
+                    while i < len(zones):
+                        z = zones[i]
+                        j = i
+                        while j < len(zones) and zones[j] == z:
+                            j += 1
+                        t0 = times[i]
+                        t1 = times[min(j, len(times) - 1)]
+                        ax.axvspan(t0, t1, color=zone_colors.get(z, "#dddddd"),
+                                   alpha=0.3, linewidth=0)
+                        i = j
+                if "nose_nose_dist_bl" in df.columns:
+                    valid = df.dropna(subset=["nose_nose_dist_bl"])
+                    ax.plot(valid["time_sec"], valid["nose_nose_dist_bl"],
+                            color="#1f77b4", linewidth=0.5, alpha=0.8, label="Nose-Nose (BL)")
+                if "centroid_dist_bl" in df.columns:
+                    valid = df.dropna(subset=["centroid_dist_bl"])
+                    ax.plot(valid["time_sec"], valid["centroid_dist_bl"],
+                            color="#ff7f0e", linewidth=0.5, alpha=0.8, label="Centroid (BL)")
+                ax.set_xlabel("Time (seconds)")
+                ax.set_ylabel("Distance (body lengths)")
+                ax.set_title("Inter-Rat Distance Over Time")
+                line_handles = ax.get_legend_handles_labels()[0]
+                zone_patches = [mpatches.Patch(color=c, alpha=0.3, label=z.capitalize())
+                                for z, c in zone_colors.items()]
+                ax.legend(handles=line_handles + zone_patches,
+                          loc="upper right", fontsize=7, ncol=2)
+                ax.set_xlim(0, df["time_sec"].max())
+                plt.tight_layout()
+                pdf.savefig(fig)
+                plt.close(fig)
+
+                # ── Page 7: Investigator Role Breakdown ──
+                asym_types = ["N2AG", "N2B", "FOL"]
+                inv_data = {}
+                for ct_val in asym_types:
+                    ct_bouts = [b for b in self._bouts if b.contact_type == ct_val]
+                    slot_counts = {}
+                    for b in ct_bouts:
+                        s = b.investigator_slot if b.investigator_slot is not None else -1
+                        slot_counts[s] = slot_counts.get(s, 0) + 1
+                    inv_data[ct_val] = slot_counts
+
+                if any(inv_data.values()):
+                    fig, ax = plt.subplots(figsize=(10, 5))
+                    y_pos = list(range(len(asym_types)))
+                    slot_ids = sorted({s for sc in inv_data.values() for s in sc.keys()})
+                    slot_colors = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728"]
+                    for idx, slot_id in enumerate(slot_ids):
+                        vals = [inv_data[ct].get(slot_id, 0) for ct in asym_types]
+                        label = f"Rat {slot_id}" if slot_id >= 0 else "Unknown"
+                        color = slot_colors[idx % len(slot_colors)]
+                        left = [0] * len(asym_types)
+                        if idx > 0:
+                            for prev in range(idx):
+                                prev_slot = slot_ids[prev]
+                                for j, ct in enumerate(asym_types):
+                                    left[j] += inv_data[ct].get(prev_slot, 0)
+                        ax.barh(y_pos, vals, left=left, height=0.5,
+                                color=color, label=label, edgecolor="white")
+                    ax.set_yticks(y_pos)
+                    ax.set_yticklabels(asym_types)
+                    ax.set_xlabel("Number of Bouts")
+                    ax.set_title("Investigator Role Breakdown (who initiates)")
+                    ax.legend(loc="lower right", fontsize=9)
+                    plt.tight_layout()
+                    pdf.savefig(fig)
+                    plt.close(fig)
+
+                # ── Page 8: Cumulative Contact Time ──
+                fig, ax = plt.subplots(figsize=(14, 5))
+                for ct in ContactType:
+                    ct_frames = df[df["contact_type"] == ct.value]
+                    if ct_frames.empty:
+                        continue
+                    times = ct_frames["time_sec"].values
+                    dt = 1.0 / self.fps if self.fps > 0 else 1.0 / 30.0
+                    cumulative = np.arange(1, len(times) + 1) * dt
+                    ax.plot(times, cumulative, color=ct_colors[ct.value],
+                            linewidth=1.5, label=ct.value)
+                ax.set_xlabel("Time (seconds)")
+                ax.set_ylabel("Cumulative contact time (seconds)")
+                ax.set_title("Cumulative Contact Time by Type")
+                ax.legend(loc="upper left", fontsize=9)
+                ax.set_xlim(0, df["time_sec"].max())
+                plt.tight_layout()
+                pdf.savefig(fig)
+                plt.close(fig)
+
         logger.info("PDF report: %s", pdf_path)

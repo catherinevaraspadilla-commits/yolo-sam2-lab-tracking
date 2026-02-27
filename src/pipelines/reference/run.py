@@ -120,14 +120,16 @@ def run_pipeline(
     im_cfg = config.get("identity_matcher", {})
     matcher = IdentityMatcher(
         max_entities=max_animals,
-        proximity_threshold=im_cfg.get("proximity_threshold", 60.0),
+        proximity_threshold=im_cfg.get("proximity_threshold", 150.0),
         area_tolerance=im_cfg.get("area_tolerance", 0.4),
+        max_merged_frames=im_cfg.get("max_merged_frames", 30),
     )
     logger.info(
-        "IdentityMatcher: max_entities=%d, proximity=%.0f px, area_tolerance=%.1f%%",
+        "IdentityMatcher: max_entities=%d, proximity=%.0f px, area_tolerance=%.1f%%, max_merged=%d",
         max_animals,
-        im_cfg.get("proximity_threshold", 60.0),
+        im_cfg.get("proximity_threshold", 150.0),
         im_cfg.get("area_tolerance", 0.4) * 100,
+        im_cfg.get("max_merged_frames", 30),
     )
 
     # Contact classification (optional)
@@ -167,6 +169,7 @@ def run_pipeline(
             sam_threshold=sam_thr,
             max_entities=max_animals,
             kpt_min_conf=kpt_min_conf,
+            interaction_state=matcher.state,
         )
 
         # Step 3: Filter duplicates
@@ -192,8 +195,9 @@ def run_pipeline(
                 det.track_id = slot_idx + 1
 
         # Step 6: Contact classification (if enabled)
+        # Skip during MERGED state — identity is ambiguous, contacts unreliable
         contact_events = []
-        if contact_tracker is not None:
+        if contact_tracker is not None and matcher.state == "SEPARATE":
             contact_events = contact_tracker.update(
                 slot_dets, slot_masks, slot_centroids, frame_idx,
             )

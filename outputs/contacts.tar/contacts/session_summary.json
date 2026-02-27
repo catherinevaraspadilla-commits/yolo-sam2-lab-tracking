@@ -1,0 +1,27 @@
+{
+  "merged_from_chunks": 4,
+  "merge_timestamp": "2026-02-27T15:44:13.433839",
+  "total_frames": 0,
+  "contact_type_summary": {
+    "FOL": {
+      "total_bouts": 2,
+      "total_frames": 4
+    },
+    "N2AG": {
+      "total_bouts": 17,
+      "total_frames": 155
+    },
+    "N2B": {
+      "total_bouts": 18,
+      "total_frames": 98
+    },
+    "N2N": {
+      "total_bouts": 9,
+      "total_frames": 66
+    },
+    "SBS": {
+      "total_bouts": 0,
+      "total_frames": 0
+    }
+  }
+}

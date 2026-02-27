@@ -42,6 +42,7 @@ def segment_frame(
     sam_threshold: float = 0.0,
     max_entities: int = 2,
     kpt_min_conf: float = 0.3,
+    interaction_state: str = "SEPARATE",
 ) -> Tuple[List[np.ndarray], List[float]]:
     """Segment a frame with SAM2 using YOLO boxes + keypoints + centroid fallback.
 
@@ -50,9 +51,11 @@ def segment_frame(
         2. For each YOLO detection: predict(box + keypoints) → mask
            - If boxes overlap with another detection, add negative keypoints
              from the other detection to help SAM2 distinguish them
-        3. If YOLO detected fewer objects than active slots:
+        3. If YOLO detected fewer objects than active slots AND state is SEPARATE:
            for each active slot without a YOLO mask nearby,
            predict(point_coords=prev_centroid) → fallback mask
+           (Centroid fallback is skipped during MERGED state to avoid
+           re-segmenting the merged blob as a duplicate.)
         4. Return all masks + scores (to be filtered/matched by caller)
 
     Args:
@@ -63,6 +66,9 @@ def segment_frame(
         sam_threshold: Threshold for SAM2 logit masks.
         max_entities: Expected number of objects to track.
         kpt_min_conf: Minimum keypoint confidence for SAM2 prompts.
+        interaction_state: Current matcher state ('SEPARATE' or 'MERGED').
+            Centroid fallback is disabled during MERGED to avoid duplicating
+            the merged blob.
 
     Returns:
         (masks, scores) — all masks from boxes + fallback centroids.
@@ -114,8 +120,10 @@ def segment_frame(
     # --- Step 2: Centroid fallback for missing objects ---
     # If YOLO detected fewer objects than expected AND we have previous centroids,
     # use the previous centroids as point prompts for the missing objects.
+    # Skip during MERGED state: centroid fallback near a merged blob would just
+    # re-segment the same blob, producing a duplicate mask.
     n_from_yolo = len(all_masks)
-    if n_from_yolo < max_entities:
+    if n_from_yolo < max_entities and interaction_state != "MERGED":
         # Compute centroids of masks we already have from YOLO
         yolo_centroids = [compute_centroid(m) for m in all_masks]
 

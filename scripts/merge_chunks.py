@@ -165,30 +165,96 @@ def merge_session_summaries(chunk_dirs: List[Path], output_dir: Path) -> None:
     if not summaries:
         return
 
-    # Merge: sum up counts, combine bout lists
-    merged = {
-        "merged_from_chunks": len(summaries),
-        "merge_timestamp": datetime.now().isoformat(),
-        "total_frames": sum(s.get("total_frames", 0) for s in summaries),
-        "contact_type_summary": {},
-    }
+    # Metadata from first chunk
+    first_meta = summaries[0].get("metadata", {})
+    total_frames = sum(s.get("metadata", {}).get("total_frames", 0) for s in summaries)
+    fps = first_meta.get("fps", 30.0)
+    duration_sec = total_frames / fps if fps > 0 else 0
 
-    # Aggregate contact type counts
+    # Zone summary: sum frame counts, recalculate percentages
+    zone_summary = {}
+    for z in ["contact", "proximity", "independent"]:
+        count = sum(s.get("zone_summary", {}).get(f"{z}_frames", 0) for s in summaries)
+        zone_summary[f"{z}_frames"] = count
+        zone_summary[f"{z}_pct"] = round(count / max(total_frames, 1) * 100, 2)
+
+    # Contact type summary: sum bouts, durations, frames
     all_types = set()
     for s in summaries:
         all_types.update(s.get("contact_type_summary", {}).keys())
 
+    type_summary = {}
     for ct in sorted(all_types):
-        merged["contact_type_summary"][ct] = {
-            "total_bouts": sum(
-                s.get("contact_type_summary", {}).get(ct, {}).get("total_bouts", 0)
-                for s in summaries
-            ),
-            "total_frames": sum(
-                s.get("contact_type_summary", {}).get(ct, {}).get("total_frames", 0)
-                for s in summaries
-            ),
+        chunks = [s.get("contact_type_summary", {}).get(ct, {}) for s in summaries]
+        total_bouts = sum(c.get("total_bouts", 0) for c in chunks)
+        total_dur = sum(c.get("total_duration_sec", 0) for c in chunks)
+        total_fr = sum(c.get("total_frames", 0) for c in chunks)
+        entry = {
+            "total_bouts": total_bouts,
+            "total_duration_sec": round(total_dur, 2),
+            "total_frames": total_fr,
+            "pct_of_session": round(total_fr / max(total_frames, 1) * 100, 2),
         }
+        # Merge by_investigator breakdowns
+        by_inv_merged: dict = {}
+        for c in chunks:
+            for inv_key, inv_val in c.get("by_investigator", {}).items():
+                if inv_key not in by_inv_merged:
+                    by_inv_merged[inv_key] = {"bouts": 0, "duration_sec": 0.0}
+                by_inv_merged[inv_key]["bouts"] += inv_val.get("bouts", 0)
+                by_inv_merged[inv_key]["duration_sec"] = round(
+                    by_inv_merged[inv_key]["duration_sec"] + inv_val.get("duration_sec", 0), 2
+                )
+        if by_inv_merged:
+            entry["by_investigator"] = by_inv_merged
+        type_summary[ct] = entry
+
+    # Per-pair summary: sum across chunks
+    all_pairs = set()
+    for s in summaries:
+        all_pairs.update(s.get("per_pair_summary", {}).keys())
+    pair_summary = {}
+    for pair_key in sorted(all_pairs):
+        pair_total = 0.0
+        by_type: dict = {}
+        for s in summaries:
+            pi = s.get("per_pair_summary", {}).get(pair_key, {})
+            pair_total += pi.get("total_contact_sec", 0)
+            for ct_name, ct_info in pi.get("contact_types", {}).items():
+                if ct_name not in by_type:
+                    by_type[ct_name] = {"bouts": 0, "duration_sec": 0.0}
+                by_type[ct_name]["bouts"] += ct_info.get("bouts", 0)
+                by_type[ct_name]["duration_sec"] = round(
+                    by_type[ct_name]["duration_sec"] + ct_info.get("duration_sec", 0), 2
+                )
+        pair_summary[pair_key] = {
+            "total_contact_sec": round(pair_total, 2),
+            "total_contact_pct": round(pair_total / duration_sec * 100, 2) if duration_sec > 0 else 0.0,
+            "contact_types": by_type,
+        }
+
+    # Quality: sum frame counts
+    quality = {}
+    for qk in ["high_mask_overlap_frames", "missing_keypoints_frames", "single_detection_frames"]:
+        quality[qk] = sum(s.get("quality", {}).get(qk, 0) for s in summaries)
+    flagged = sum(quality.values())
+    quality["total_flagged_pct"] = round(flagged / max(total_frames, 1) * 100, 2)
+
+    merged = {
+        "metadata": {
+            "video_path": first_meta.get("video_path", ""),
+            "video_duration_sec": round(duration_sec, 2),
+            "total_frames": total_frames,
+            "fps": fps,
+            "num_rats": first_meta.get("num_rats", 2),
+            "analysis_date": datetime.now().isoformat(timespec="seconds"),
+            "merged_from_chunks": len(summaries),
+        },
+        "zone_summary": zone_summary,
+        "contact_type_summary": type_summary,
+        "per_pair_summary": pair_summary,
+        "quality": quality,
+    }
 
     contacts_dir = output_dir / "contacts"
     contacts_dir.mkdir(parents=True, exist_ok=True)
@@ -196,6 +262,235 @@ def merge_session_summaries(chunk_dirs: List[Path], output_dir: Path) -> None:
     with out_path.open("w", encoding="utf-8") as f:
         json.dump(merged, f, indent=2)
     logger.info("Merged session summary from %d chunks → %s", len(summaries), out_path)
+
+
+def generate_merged_report(contacts_dir: Path) -> None:
+    """Generate report.pdf from merged contact CSVs and session summary."""
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        from matplotlib.backends.backend_pdf import PdfPages
+        import matplotlib.pyplot as plt
+        import matplotlib.patches as mpatches
+        import numpy as np
+        import pandas as pd
+    except ImportError:
+        logger.warning("matplotlib/pandas not available — skipping PDF report")
+        return
+
+    csv_path = contacts_dir / "contacts_per_frame.csv"
+    bouts_path = contacts_dir / "contact_bouts.csv"
+    summary_path = contacts_dir / "session_summary.json"
+
+    if not csv_path.exists():
+        logger.warning("No contacts_per_frame.csv found — skipping report")
+        return
+
+    df = pd.read_csv(csv_path)
+    if df.empty:
+        return
+
+    bouts_df = pd.read_csv(bouts_path) if bouts_path.exists() else pd.DataFrame()
+    summary = {}
+    if summary_path.exists():
+        with summary_path.open() as f:
+            summary = json.load(f)
+
+    ct_names = ["N2N", "N2AG", "N2B", "FOL", "SBS"]
+    ct_colors = {
+        "N2N": "#1f77b4", "N2AG": "#ff7f0e", "N2B": "#2ca02c",
+        "SBS": "#9467bd", "FOL": "#d62728",
+    }
+    meta = summary.get("metadata", {})
+    duration = meta.get("video_duration_sec", df["time_sec"].max())
+    fps = meta.get("fps", 30.0)
+
+    pdf_path = contacts_dir / "report.pdf"
+    with PdfPages(str(pdf_path)) as pdf:
+
+        # ── Page 1: Timeline Ethogram ──
+        if not bouts_df.empty and "start_time_sec" in bouts_df.columns:
+            fig, ax = plt.subplots(figsize=(14, 3))
+            for _, bout in bouts_df.iterrows():
+                color = ct_colors.get(bout.get("contact_type", ""), "#888888")
+                dur = bout.get("duration_sec", bout.get("end_time_sec", 0) - bout.get("start_time_sec", 0))
+                ax.barh(0, dur, left=bout["start_time_sec"],
+                        height=0.6, color=color, edgecolor="none")
+            ax.set_yticks([0])
+            ax.set_yticklabels(["Pair 0-1"])
+            ax.set_xlabel("Time (seconds)")
+            ax.set_title("Contact Ethogram (merged)")
+            patches = [mpatches.Patch(color=c, label=t) for t, c in ct_colors.items()]
+            ax.legend(handles=patches, loc="upper right", ncol=5, fontsize=8)
+            ax.set_xlim(0, duration)
+            plt.tight_layout()
+            pdf.savefig(fig)
+            plt.close(fig)
+
+        # ── Page 2: Duration Histograms ──
+        if not bouts_df.empty and "duration_sec" in bouts_df.columns:
+            fig, axes = plt.subplots(2, 3, figsize=(12, 7))
+            axes_flat = axes.flatten()
+            all_durations = []
+            for idx, ct in enumerate(ct_names):
+                ax = axes_flat[idx]
+                durations = bouts_df[bouts_df["contact_type"] == ct]["duration_sec"].tolist()
+                all_durations.extend(durations)
+                if durations:
+                    ax.hist(durations, bins=min(20, max(5, len(durations))),
+                            color=ct_colors[ct], edgecolor="white")
+                ax.set_title(ct)
+                ax.set_xlabel("Duration (s)")
+                ax.set_ylabel("Count")
+            ax = axes_flat[5]
+            if all_durations:
+                ax.hist(all_durations, bins=min(20, max(5, len(all_durations))),
+                        color="#888888", edgecolor="white")
+            ax.set_title("ALL")
+            ax.set_xlabel("Duration (s)")
+            ax.set_ylabel("Count")
+            plt.suptitle("Bout Duration Distributions", fontsize=13)
+            plt.tight_layout()
+            pdf.savefig(fig)
+            plt.close(fig)
+
+        # ── Page 3: Pie Chart ──
+        type_sums = summary.get("contact_type_summary", {})
+        labels, sizes, colors = [], [], []
+        for ct in ct_names:
+            dur = type_sums.get(ct, {}).get("total_duration_sec", 0)
+            if dur > 0:
+                labels.append(ct)
+                sizes.append(dur)
+                colors.append(ct_colors[ct])
+        fig, ax = plt.subplots(figsize=(8, 6))
+        if sizes:
+            ax.pie(sizes, labels=labels, colors=colors, autopct="%1.1f%%", startangle=90)
+            ax.set_title("Contact Time by Type")
+        else:
+            ax.text(0.5, 0.5, "No contacts detected", ha="center", va="center", fontsize=14)
+        plt.tight_layout()
+        pdf.savefig(fig)
+        plt.close(fig)
+
+        # ── Page 4: Summary Table ──
+        pair_summary = summary.get("per_pair_summary", {})
+        if pair_summary:
+            fig, ax = plt.subplots(figsize=(10, 4))
+            ax.axis("off")
+            table_data = []
+            headers = ["Pair", "Total (s)", "N2N", "N2AG", "N2B", "SBS", "FOL"]
+            for pair_key, pair_info in pair_summary.items():
+                row = [pair_key.replace("pair_", "")]
+                row.append(f"{pair_info['total_contact_sec']:.1f}")
+                for ct in ct_names:
+                    ct_info = pair_info.get("contact_types", {}).get(ct, {})
+                    dur_val = ct_info.get("duration_sec", 0)
+                    bouts_val = ct_info.get("bouts", 0)
+                    row.append(f"{dur_val:.1f}s ({bouts_val}b)")
+                table_data.append(row)
+            if table_data:
+                table = ax.table(cellText=table_data, colLabels=headers,
+                                 loc="center", cellLoc="center")
+                table.auto_set_font_size(False)
+                table.set_fontsize(10)
+                table.scale(1.2, 1.5)
+            ax.set_title("Per-Pair Contact Summary", fontsize=13, pad=20)
+            plt.tight_layout()
+            pdf.savefig(fig)
+            plt.close(fig)
+
+        # ── Page 5: Distance Over Time ──
+        if "time_sec" in df.columns:
+            fig, ax = plt.subplots(figsize=(14, 4))
+            zone_colors_bg = {"contact": "#2ca02c", "proximity": "#ffcc00", "independent": "#dddddd"}
+            if "zone" in df.columns:
+                zones = df["zone"].values
+                times = df["time_sec"].values
+                i = 0
+                while i < len(zones):
+                    z = zones[i]
+                    j = i
+                    while j < len(zones) and zones[j] == z:
+                        j += 1
+                    ax.axvspan(times[i], times[min(j, len(times) - 1)],
+                               color=zone_colors_bg.get(z, "#dddddd"), alpha=0.3, linewidth=0)
+                    i = j
+            if "nose_nose_dist_bl" in df.columns:
+                valid = df.dropna(subset=["nose_nose_dist_bl"])
+                ax.plot(valid["time_sec"], valid["nose_nose_dist_bl"],
+                        color="#1f77b4", linewidth=0.5, alpha=0.8, label="Nose-Nose (BL)")
+            if "centroid_dist_bl" in df.columns:
+                valid = df.dropna(subset=["centroid_dist_bl"])
+                ax.plot(valid["time_sec"], valid["centroid_dist_bl"],
+                        color="#ff7f0e", linewidth=0.5, alpha=0.8, label="Centroid (BL)")
+            ax.set_xlabel("Time (seconds)")
+            ax.set_ylabel("Distance (body lengths)")
+            ax.set_title("Inter-Rat Distance Over Time")
+            line_handles = ax.get_legend_handles_labels()[0]
+            zone_patches = [mpatches.Patch(color=c, alpha=0.3, label=z.capitalize())
+                            for z, c in zone_colors_bg.items()]
+            ax.legend(handles=line_handles + zone_patches,
+                      loc="upper right", fontsize=7, ncol=2)
+            ax.set_xlim(0, df["time_sec"].max())
+            plt.tight_layout()
+            pdf.savefig(fig)
+            plt.close(fig)
+
+        # ── Page 6: Investigator Role Breakdown ──
+        if not bouts_df.empty and "investigator_slot" in bouts_df.columns:
+            asym_types = ["N2AG", "N2B", "FOL"]
+            inv_data = {}
+            for ct_val in asym_types:
+                ct_rows = bouts_df[bouts_df["contact_type"] == ct_val]
+                slot_counts = ct_rows["investigator_slot"].dropna().astype(int).value_counts().to_dict()
+                inv_data[ct_val] = slot_counts
+            if any(inv_data.values()):
+                fig, ax = plt.subplots(figsize=(10, 5))
+                y_pos = list(range(len(asym_types)))
+                slot_ids = sorted({s for sc in inv_data.values() for s in sc.keys()})
+                slot_colors_list = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728"]
+                for idx, slot_id in enumerate(slot_ids):
+                    vals = [inv_data[ct].get(slot_id, 0) for ct in asym_types]
+                    color = slot_colors_list[idx % len(slot_colors_list)]
+                    left = [0] * len(asym_types)
+                    if idx > 0:
+                        for prev in range(idx):
+                            prev_slot = slot_ids[prev]
+                            for j_idx, ct in enumerate(asym_types):
+                                left[j_idx] += inv_data[ct].get(prev_slot, 0)
+                    ax.barh(y_pos, vals, left=left, height=0.5,
+                            color=color, label=f"Rat {slot_id}", edgecolor="white")
+                ax.set_yticks(y_pos)
+                ax.set_yticklabels(asym_types)
+                ax.set_xlabel("Number of Bouts")
+                ax.set_title("Investigator Role Breakdown (who initiates)")
+                ax.legend(loc="lower right", fontsize=9)
+                plt.tight_layout()
+                pdf.savefig(fig)
+                plt.close(fig)
+
+        # ── Page 7: Cumulative Contact Time ──
+        if "contact_type" in df.columns:
+            fig, ax = plt.subplots(figsize=(14, 5))
+            dt = 1.0 / fps if fps > 0 else 1.0 / 30.0
+            for ct in ct_names:
+                ct_frames = df[df["contact_type"] == ct]
+                if ct_frames.empty:
+                    continue
+                times = ct_frames["time_sec"].values
+                cumulative = np.arange(1, len(times) + 1) * dt
+                ax.plot(times, cumulative, color=ct_colors[ct], linewidth=1.5, label=ct)
+            ax.set_xlabel("Time (seconds)")
+            ax.set_ylabel("Cumulative contact time (seconds)")
+            ax.set_title("Cumulative Contact Time by Type")
+            ax.legend(loc="upper left", fontsize=9)
+            ax.set_xlim(0, df["time_sec"].max())
+            plt.tight_layout()
+            pdf.savefig(fig)
+            plt.close(fig)
+
+    logger.info("Merged report: %s", pdf_path)
 
 
 def main():
@@ -246,6 +541,9 @@ def main():
 
     # Merge session summaries
     merge_session_summaries(chunk_dirs, output_dir)
+
+    # Generate merged report PDF
+    generate_merged_report(contacts_dir)
 
     # Merge logs
     logs_dir = output_dir / "logs"

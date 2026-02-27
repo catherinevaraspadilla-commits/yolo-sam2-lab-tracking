@@ -52,9 +52,12 @@ segmentation:
   mask_iou_threshold: 0.5
 
 # --- Identity Matcher (replaces SlotTracker) ---
+# Uses Hungarian assignment with soft cost (distance + mask IoU + area).
+# Includes N=2 state machine: SEPARATE ↔ MERGED for close-interaction handling.
 identity_matcher:
-  proximity_threshold: 60.0
-  area_tolerance: 0.4
+  proximity_threshold: 150.0      # soft normalization distance (px), not a hard cutoff
+  area_tolerance: 0.4             # used in soft area cost (not a hard veto)
+  max_merged_frames: 30           # max frames in MERGED state before force-reset
 
 # --- Social contact classification ---
 contacts:
