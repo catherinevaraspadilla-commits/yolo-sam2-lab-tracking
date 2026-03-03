@@ -10,34 +10,15 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, Tuple
 
-import torch
 from ultralytics import YOLO
 
 from sam2.build_sam import build_sam2
 from sam2.sam2_image_predictor import SAM2ImagePredictor
 
 from src.common.config_loader import get_device
+from src.common.model_loaders import load_yolo
 
 logger = logging.getLogger(__name__)
-
-
-def load_yolo(model_path: str | Path, device: str) -> YOLO:
-    """Load a YOLOv8 model.
-
-    Args:
-        model_path: Path to the .pt weights file.
-        device: Device string ("cuda" or "cpu").
-
-    Returns:
-        Loaded YOLO model on the specified device.
-    """
-    model_path = Path(model_path)
-    if not model_path.exists():
-        raise FileNotFoundError(f"YOLO model not found: {model_path}")
-    logger.info("Loading YOLO model from %s", model_path)
-    model = YOLO(str(model_path))
-    model.to(device)
-    return model
 
 
 def load_sam2_predictor(

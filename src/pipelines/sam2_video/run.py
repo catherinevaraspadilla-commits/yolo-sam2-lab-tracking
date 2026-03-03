@@ -32,6 +32,7 @@ import torch
 
 from src.common.config_loader import load_config, setup_run_dir, setup_logging
 from src.common.contacts import ContactTracker
+from src.common.geometry import euclidean_distance
 from src.common.io_video import open_video_reader, get_video_properties, create_video_writer
 from src.common.metrics import compute_centroid
 from src.common.utils import Detection
@@ -145,10 +146,8 @@ def _match_segment_identity(
     return list(range(n))
 
 
-def _dist(a, b):
-    if a is None or b is None:
-        return float("inf")
-    return ((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2) ** 0.5
+# Use shared euclidean_distance from src.common.geometry (imported above)
+_dist = euclidean_distance
 
 
 def run_pipeline(

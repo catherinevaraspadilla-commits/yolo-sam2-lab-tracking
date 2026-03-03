@@ -10,14 +10,13 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, Tuple
 
-import torch
 from ultralytics import YOLO
 
 from sam2.build_sam import build_sam2_video_predictor
 from sam2.sam2_video_predictor import SAM2VideoPredictor
 
 from src.common.config_loader import get_device
-from src.pipelines.sam2_yolo.models_io import load_yolo
+from src.common.model_loaders import load_yolo
 
 logger = logging.getLogger(__name__)
 

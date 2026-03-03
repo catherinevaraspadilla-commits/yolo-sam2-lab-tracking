@@ -18,14 +18,11 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 from scipy.optimize import linear_sum_assignment
 
-from .metrics import mask_iou, compute_centroid
+from .cost import INF_COST, compute_assignment_cost
+from .mask_dedup import deduplicate_masks
+from .metrics import compute_centroid
 
 logger = logging.getLogger(__name__)
-
-# Cost for impossible assignments (hard gate for truly pathological cases)
-INF_COST = 1e6
-# Hard veto only for extreme area changes (5x ratio = 400% change)
-HARD_AREA_RATIO_VETO = 5.0
 
 
 def filter_masks(
@@ -37,21 +34,8 @@ def filter_masks(
 
     If num_masks <= max_count, returns all masks unmodified.
     """
-    if len(masks) <= max_count:
-        return masks
-
-    areas = [m.sum() for m in masks]
-    sorted_idx = np.argsort(areas)[::-1]
-    sorted_masks = [masks[i] for i in sorted_idx]
-
-    unique: List[np.ndarray] = []
-    for mask in sorted_masks:
-        if all(mask_iou(mask, u) <= iou_threshold for u in unique):
-            unique.append(mask)
-            if len(unique) >= max_count:
-                break
-
-    return unique
+    result, _ = deduplicate_masks(masks, max_count, iou_threshold)
+    return result
 
 
 @dataclass
@@ -316,30 +300,11 @@ class SlotTracker:
         if not slot.active or slot.centroid is None:
             return INF_COST
 
-        # --- Distance cost (normalized) ---
-        dx = centroid[0] - slot.centroid[0]
-        dy = centroid[1] - slot.centroid[1]
-        dist = (dx * dx + dy * dy) ** 0.5
-        dist_cost = min(dist / self.max_distance, 1.0)
-
-        # --- Mask IoU cost ---
-        if slot.mask is not None:
-            iou = mask_iou(mask, slot.mask)
-            iou_cost = 1.0 - iou
-        else:
-            iou_cost = 0.5  # neutral if no previous mask
-
-        # --- Area change cost (SOFT, not hard veto) ---
-        if slot.area > 0 and area > 0:
-            ratio = max(area, slot.area) / min(area, slot.area)
-            if ratio > HARD_AREA_RATIO_VETO:
-                return INF_COST  # only veto extreme cases (5x change)
-            # Soft cost: 0 at ratio=1, approaches 1 as ratio→2+
-            area_cost = min((ratio - 1.0), 1.0)
-        else:
-            area_cost = 0.5
-
-        return self.w_dist * dist_cost + self.w_iou * iou_cost + self.w_area * area_cost
+        return compute_assignment_cost(
+            centroid, area, mask,
+            slot.centroid, float(slot.area), slot.mask,
+            self.max_distance, self.w_dist, self.w_iou, self.w_area,
+        )
 
     def _assign_to_slot(self, slot_idx, mask, centroid, area, track_id):
         """Assign a mask to a slot, updating all state."""

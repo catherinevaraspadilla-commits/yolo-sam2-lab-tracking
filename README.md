@@ -1,6 +1,6 @@
-# Mouse Tracking Vision Pipeline (YOLOv8 + SAM2)
+# Rat Tracking Vision Pipeline (YOLO26 + SAM2)
 
-AI-based workflow for analyzing laboratory mouse movement from real-world lab videos. Combines YOLOv8 detection with SAM2 segmentation for accurate body-part localization (nose, head, tail), trajectory extraction, and behavior analysis.
+AI-based workflow for analyzing laboratory rat movement from real-world lab videos. Combines YOLO26 pose detection with SAM2 segmentation for accurate body-part localization (7 keypoints), identity tracking, and social contact classification.
 
 ## Quick Start
 
@@ -9,98 +9,119 @@ AI-based workflow for analyzing laboratory mouse movement from real-world lab vi
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 
-# Run SAM2+YOLO pipeline on a short clip
+# Run reference pipeline on a short clip (recommended)
+python -m src.pipelines.reference.run --config configs/local_reference.yaml
+
+# Or run sam2_yolo pipeline
 python -m src.pipelines.sam2_yolo.run --config configs/local_quick.yaml
 
-# Extract close-contact frames for labeling
-python scripts/extract_frames.py all --config configs/local_quick.yaml
-
-# Upload frames to Roboflow
-export ROBOFLOW_API_KEY="your-key"
-python scripts/upload_to_roboflow.py --config configs/local_quick.yaml --frames-root outputs/runs/<run>/frames
+# With contact classification
+python -m src.pipelines.reference.run --config configs/local_reference.yaml contacts.enabled=true
 ```
 
 ## How It Works
 
-1. **YOLOv8** detects mouse bounding boxes and body parts
+1. **YOLO26** detects rat bounding boxes and 7 body-part keypoints (NMS-free architecture)
 2. **SAM2** segments each detection into pixel-accurate masks
-3. **Tracking** maintains consistent identity across frames via centroid matching
-4. **Outputs** — overlay videos, extracted frames, run logs
+3. **IdentityMatcher** maintains consistent identity via Hungarian assignment + state machine
+4. **ContactTracker** classifies social contacts (nose-to-nose, side-by-side, following, etc.)
+5. **Outputs** — overlay videos, contact CSVs, bout reports, session summaries
+
+## Pipelines
+
+| Pipeline | Best for | Tracking | Speed |
+|----------|----------|----------|-------|
+| **reference** (recommended) | Most videos | IdentityMatcher + centroid fallback | ~25 FPS |
+| sam2_yolo | Simple scenes | SlotTracker + BoT-SORT | ~25 FPS |
+| sam2_video | Heavy occlusion | SAM2 temporal memory | ~5-10 FPS |
+
+See [Pipeline Comparison](docs/architecture/pipelines.md) for detailed differences.
 
 ## Project Structure
 
 ```
 yolo-sam2-lab-tracking/
-  configs/                      # YAML configs (local_quick, hpc_full)
-  docs/                         # Documentation
+  configs/                           # YAML configs (6 files: local/hpc × 3 pipelines)
+  docs/                              # Documentation (see docs/README.md for index)
   data/
-    raw/                        # Full videos (gitignored)
-    clips/                      # Short test clips
-    roboflow_export/            # Annotated dataset exports
+    raw/                             # Full videos (gitignored)
+    clips/                           # Short test clips
   models/
-    yolo/                       # YOLOv8 weights
-    sam2/                       # SAM2 checkpoints
+    yolo/                            # YOLO26 weights (modelyolo26.pt)
+    sam2/                            # SAM2 checkpoints
   src/
-    common/                     # Shared utilities
-      config_loader.py          #   YAML loading, run setup, logging
-      io_video.py               #   Video read/write/iterate
-      metrics.py                #   IoU, centroids, closeness
-      visualization.py          #   Mask overlays, annotations
-      tracking.py               #   Mask filtering, identity matching
-      utils.py                  #   Shared data classes
+    common/                          # Shared utilities
+      config_loader.py               #   YAML loading, run setup, logging
+      io_video.py                    #   Video read/write/iterate
+      metrics.py                     #   mask_iou, compute_centroid
+      visualization.py               #   Mask overlays, keypoints
+      tracking.py                    #   SlotTracker (sam2_yolo pipeline)
+      contacts.py                    #   ContactTracker + bout detection
+      utils.py                       #   Detection, Keypoint dataclasses
     pipelines/
-      sam2_yolo/                # SAM2+YOLO pipeline
-        run.py                  #   Entry point
-        models_io.py            #   Model loading
-        infer_yolo.py           #   YOLO detection
-        infer_sam2.py           #   SAM2 segmentation
-        postprocess.py          #   Filtering + tracking
-      sam3/                     # SAM3 pipeline (placeholder)
+      reference/                     # Reference pipeline (recommended)
+        run.py                       #   Entry point
+        identity_matcher.py          #   Hungarian + state machine tracking
+        sam2_processor.py            #   SAM2 prompts + centroid fallback
+      sam2_yolo/                     # SAM2+YOLO pipeline
+        run.py                       #   Entry point
+        models_io.py                 #   Model loading
+        infer_yolo.py                #   YOLO detection
+        infer_sam2.py                #   SAM2 segmentation
+        postprocess.py               #   Filtering + tracking
+      sam2_video/                    # SAM2 Video pipeline
+        run.py                       #   Entry point
   scripts/
-    extract_frames.py           # Close-contact frame extraction
-    upload_to_roboflow.py       # Roboflow upload
-    extract_clip.py             # Cut clips from raw video
-    export_results.py           # Export run artifacts
-  slurm/                        # HPC job scripts
-  outputs/runs/                 # Structured run outputs
+    run_parallel.sh                  # Multi-GPU parallel execution
+    merge_chunks.py                  # Merge chunk outputs (video + contacts)
+    extract_frames.py                # Close-contact frame extraction
+    trim_video.py                    # Cut clips from raw video
+    analyze_contacts.py              # Contact analysis utilities
+  slurm/                             # HPC Slurm job scripts
+  outputs/runs/                      # Structured run outputs
 ```
 
 ## Configuration
 
 All parameters are in YAML configs — no hardcoded thresholds:
 
-- **`configs/local_quick.yaml`** — 6s clip, SAM2 tiny, CPU/GPU auto
-- **`configs/hpc_full.yaml`** — Full video, SAM2 large, CUDA
+| Pipeline | Local | HPC |
+|----------|-------|-----|
+| reference | `configs/local_reference.yaml` | `configs/hpc_reference.yaml` |
+| sam2_yolo | `configs/local_quick.yaml` | `configs/hpc_full.yaml` |
+| sam2_video | `configs/local_sam2video.yaml` | `configs/hpc_sam2video.yaml` |
 
 Override any parameter via CLI:
 ```bash
-python -m src.pipelines.sam2_yolo.run --config configs/local_quick.yaml detection.confidence=0.4
+python -m src.pipelines.reference.run --config configs/local_reference.yaml \
+    detection.confidence=0.4 contacts.enabled=true
 ```
 
 ## Documentation
 
-- [Project Overview](docs/overview.md)
-- [Data Notes](docs/data_notes.md)
-- [Running Locally](docs/running_local.md)
-- [Running on HPC (Bunya)](docs/running_hpc_bunya.md)
-- [Labeling Guide](docs/labeling_guide.md)
-- [Evaluation Plan](docs/evaluation.md)
-- [Refactoring Plan](docs/refactoring_plan.md)
+See [docs/README.md](docs/README.md) for the full documentation index.
+
+Key docs:
+- [Pipeline Comparison](docs/architecture/pipelines.md) — which pipeline to use
+- [Identity Matcher Design](docs/architecture/identity_matcher.md) — how tracking works
+- [HPC Guide](docs/setup/hpc.md) — running on Bunya
+- [Parameter Tuning](docs/guides/parameter_tuning.md) — config reference
+- [YOLO26 Migration](docs/models/yolo26_migration.md) — model upgrade details
+- [Contact Design](docs/contacts/design.md) — social contact classification
 
 ## Environments
 
 | Environment | Config | Video | SAM2 Model | Device |
 |-------------|--------|-------|-----------|--------|
-| Local laptop | `local_quick.yaml` | 5-10s clips | tiny | auto |
-| UQ Bunya HPC | `hpc_full.yaml` | ~20min full | large | cuda |
+| Local laptop | `local_reference.yaml` | 10s clips | tiny | auto |
+| UQ Bunya HPC | `hpc_reference.yaml` | full video | large | cuda |
 
-## Output Structure
+## HPC (Bunya) Quick Start
 
+```bash
+# SSH into Bunya, request GPUs, then:
+bash scripts/run_parallel.sh data/raw/original_120s.avi
 ```
-outputs/runs/<timestamp>/
-  config_used.yaml      # Reproducibility snapshot
-  logs/run.log          # Execution log
-  overlays/overlay.mp4  # Annotated video
-  scan/                 # Frame analysis artifacts
-  frames/               # Exported frames
-```
+
+This splits the video across available GPUs, processes in parallel, merges results,
+and prints download commands. See [HPC Guide](docs/setup/hpc.md) for details.

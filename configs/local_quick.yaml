@@ -20,7 +20,7 @@ output_dir: outputs/runs
 
 # --- Models ---
 models:
-  yolo_path: models/yolo/yolov8lrata.pt
+  yolo_path: models/yolo/modelyolo26.pt
 
   # SAM2 checkpoint — available sizes:
   #   sam2.1_hiera_tiny.pt    (~39 MB, fastest, good for local tests)
@@ -82,7 +82,7 @@ detection:
 
   # Custom NMS IoU threshold. null = use YOLO default (~0.7).
   # Lower values (0.3-0.5) suppress merged boxes when animals touch.
-  nms_iou: 0.5
+  nms_iou: 0.5  # no-op with YOLO26 (NMS-free architecture)
 
 # --- Segmentation (SAM2) ---
 segmentation:

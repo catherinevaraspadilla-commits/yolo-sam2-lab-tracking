@@ -17,6 +17,7 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
+from src.common.geometry import euclidean_distance
 from src.common.metrics import compute_centroid
 from src.common.utils import Detection
 
@@ -216,8 +217,5 @@ def _match_by_centroid_distance(
     return result
 
 
-def _dist(a: Optional[Tuple[float, float]], b: Tuple[float, float]) -> float:
-    """Euclidean distance, returns inf if a is None."""
-    if a is None:
-        return float("inf")
-    return ((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2) ** 0.5
+# Use shared euclidean_distance from src.common.geometry (imported above)
+_dist = euclidean_distance

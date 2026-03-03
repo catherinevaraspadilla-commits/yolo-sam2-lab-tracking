@@ -20,14 +20,11 @@ from typing import List, Optional, Tuple
 import numpy as np
 from scipy.optimize import linear_sum_assignment
 
+from src.common.cost import INF_COST, compute_assignment_cost
+from src.common.mask_dedup import deduplicate_masks
 from src.common.metrics import mask_iou, compute_centroid
 
 logger = logging.getLogger(__name__)
-
-# Cost for impossible assignments
-INF_COST = 1e6
-# Hard veto only for extreme area changes (5x = 400% change)
-HARD_AREA_RATIO_VETO = 5.0
 
 
 def resolve_overlaps(
@@ -97,24 +94,10 @@ def filter_duplicates(
     Returns:
         (unique_masks, unique_scores) — at most max_entities elements.
     """
-    if len(masks) <= max_entities:
-        return masks, scores
-
-    areas = [m.sum() for m in masks]
-    sorted_idx = np.argsort(areas)[::-1]
-
-    unique_masks: List[np.ndarray] = []
-    unique_scores: List[float] = []
-
-    for idx in sorted_idx:
-        is_dup = any(mask_iou(masks[idx], um) > iou_threshold for um in unique_masks)
-        if not is_dup:
-            unique_masks.append(masks[idx])
-            unique_scores.append(scores[idx])
-            if len(unique_masks) >= max_entities:
-                break
-
-    return unique_masks, unique_scores
+    result_masks, result_scores = deduplicate_masks(
+        masks, max_entities, iou_threshold, scores=scores,
+    )
+    return result_masks, result_scores if result_scores is not None else []
 
 
 class IdentityMatcher:
@@ -381,37 +364,18 @@ class IdentityMatcher:
         if prev_c is None or centroid is None:
             return INF_COST
 
-        # --- Distance cost (with velocity prediction) ---
-        # Use predicted position if velocity is available
+        # Apply velocity prediction before computing cost
         predicted = prev_c
         vel = self._velocities[slot_idx]
         if vel is not None:
             predicted = (prev_c[0] + vel[0], prev_c[1] + vel[1])
 
-        dx = centroid[0] - predicted[0]
-        dy = centroid[1] - predicted[1]
-        dist = (dx * dx + dy * dy) ** 0.5
-        dist_cost = min(dist / self.proximity_threshold, 1.0)
-
-        # --- Mask IoU cost ---
-        prev_mask = self.prev_masks[slot_idx]
-        if prev_mask is not None:
-            iou = mask_iou(mask, prev_mask)
-            iou_cost = 1.0 - iou
-        else:
-            iou_cost = 0.5  # neutral if no previous mask
-
-        # --- Area change cost (soft, not hard veto) ---
-        prev_area = self.prev_areas[slot_idx]
-        if prev_area is not None and prev_area > 0 and area > 0:
-            ratio = max(area, prev_area) / min(area, prev_area)
-            if ratio > HARD_AREA_RATIO_VETO:
-                return INF_COST  # only veto extreme cases (5x change)
-            area_cost = min(ratio - 1.0, 1.0)
-        else:
-            area_cost = 0.5
-
-        return self._w_dist * dist_cost + self._w_iou * iou_cost + self._w_area * area_cost
+        return compute_assignment_cost(
+            centroid, area, mask,
+            predicted, self.prev_areas[slot_idx], self.prev_masks[slot_idx],
+            self.proximity_threshold,
+            self._w_dist, self._w_iou, self._w_area,
+        )
 
     # ------------------------------------------------------------------
     # Merge detection + state machine
