@@ -138,23 +138,145 @@ for i in $(seq 0 $((NUM_CHUNKS - 1))); do
 done
 
 echo ""
-echo "All $NUM_CHUNKS chunks launched. Waiting..."
-echo "  Monitor: tail -f $LOGS_DIR/chunk_0.log"
+echo "All $NUM_CHUNKS chunks launched."
 echo ""
 
-# --- Step 5: Wait and report with timing ---
+# --- Step 5: Live progress monitor ---
+# Parse "Processed N frames" from each chunk log every 2s
+_progress_bar() {
+    local current=$1 total=$2 width=30
+    local pct=0
+    if [ "$total" -gt 0 ]; then
+        pct=$(( current * 100 / total ))
+    fi
+    local filled=$(( pct * width / 100 ))
+    local empty=$(( width - filled ))
+    local bar=""
+    for ((b=0; b<filled; b++)); do bar+="█"; done
+    for ((b=0; b<empty;  b++)); do bar+="░"; done
+    printf "%s %3d%%" "$bar" "$pct"
+}
+
+_get_chunk_frames() {
+    local log="$1"
+    if [ ! -f "$log" ]; then
+        echo 0
+        return
+    fi
+    # Get the last "Processed N frames" or "Pipeline complete. N frames"
+    local n
+    n=$(grep -oP 'Processed \K[0-9]+(?= frames)' "$log" 2>/dev/null | tail -1)
+    if [ -z "$n" ]; then
+        n=$(grep -oP 'Pipeline complete\. \K[0-9]+(?= frames)' "$log" 2>/dev/null | tail -1)
+    fi
+    echo "${n:-0}"
+}
+
+_chunk_status() {
+    local pid=$1 log=$2
+    if ! kill -0 "$pid" 2>/dev/null; then
+        # Process ended — check if success or failure
+        if wait "$pid" 2>/dev/null; then
+            echo "done"
+        else
+            echo "failed"
+        fi
+    elif grep -q "Pipeline complete" "$log" 2>/dev/null; then
+        echo "done"
+    else
+        echo "running"
+    fi
+}
+
+# Monitor loop — refresh every 2 seconds until all chunks finish
+ALL_DONE=0
+ITER=0
+CHUNK_STATUS=()
+for i in $(seq 0 $((NUM_CHUNKS - 1))); do
+    CHUNK_STATUS+=("running")
+done
+
+while [ "$ALL_DONE" -eq 0 ]; do
+    sleep 2
+
+    ELAPSED=$(( $(date +%s) - BATCH_START ))
+    E_MIN=$((ELAPSED / 60))
+    E_SEC=$((ELAPSED % 60))
+
+    # Build status lines
+    ALL_DONE=1
+    TOTAL_PROCESSED=0
+    STATUS_LINES=""
+
+    for i in $(seq 0 $((NUM_CHUNKS - 1))); do
+        LOG="${LOGS[$i]}"
+        CHUNK_FRAMES=$(( FRAMES_PER_CHUNK ))
+        if [ $i -eq $((NUM_CHUNKS - 1)) ]; then
+            CHUNK_FRAMES=$(( TOTAL_FRAMES - i * FRAMES_PER_CHUNK ))
+        fi
+
+        PROCESSED=$(_get_chunk_frames "$LOG")
+        TOTAL_PROCESSED=$((TOTAL_PROCESSED + PROCESSED))
+
+        # Update status if still running
+        if [ "${CHUNK_STATUS[$i]}" = "running" ]; then
+            CHUNK_STATUS[$i]=$(_chunk_status "${PIDS[$i]}" "$LOG")
+        fi
+
+        cur_status="${CHUNK_STATUS[$i]}"
+        case "$cur_status" in
+            running)
+                ALL_DONE=0
+                BAR=$(_progress_bar "$PROCESSED" "$CHUNK_FRAMES")
+                STATUS_LINES+="  Chunk $i: $BAR  ($PROCESSED/$CHUNK_FRAMES frames)\n"
+                ;;
+            done)
+                STATUS_LINES+="  Chunk $i: ████████████████████████████████ 100%  DONE\n"
+                ;;
+            failed)
+                STATUS_LINES+="  Chunk $i: FAILED — see $LOG\n"
+                ;;
+        esac
+    done
+
+    OVERALL=$(_progress_bar "$TOTAL_PROCESSED" "$TOTAL_FRAMES")
+
+    # Calculate ETA
+    ETA_STR=""
+    if [ "$TOTAL_PROCESSED" -gt 0 ] && [ "$ELAPSED" -gt 5 ]; then
+        REMAINING=$(( TOTAL_FRAMES - TOTAL_PROCESSED ))
+        FPS_100=$(( TOTAL_PROCESSED * 100 / ELAPSED ))  # FPS x 100 for integer math
+        if [ "$FPS_100" -gt 0 ]; then
+            ETA_SECS=$(( REMAINING * 100 / FPS_100 ))
+            ETA_MIN=$((ETA_SECS / 60))
+            ETA_SEC=$((ETA_SECS % 60))
+            REAL_FPS=$(( FPS_100 / 100 ))
+            REAL_FPS_DEC=$(( (FPS_100 % 100) / 10 ))
+            ETA_STR="  ETA: ${ETA_MIN}m ${ETA_SEC}s  (~${REAL_FPS}.${REAL_FPS_DEC} FPS)"
+        fi
+    fi
+
+    # Move cursor up and overwrite previous output (skip on first iteration)
+    # Lines: header(1) + chunks(N) + overall(1) + eta(1)
+    if [ "$ITER" -gt 0 ]; then
+        DISPLAY_LINES=$(( NUM_CHUNKS + 3 ))
+        for ((l=0; l<DISPLAY_LINES; l++)); do
+            printf "\033[A\033[2K"
+        done
+    fi
+
+    printf "  === Progress [%dm %ds elapsed] ===\n" "$E_MIN" "$E_SEC"
+    printf "%b" "$STATUS_LINES"
+    printf "  Overall: %s  (%d/%d frames)\n" "$OVERALL" "$TOTAL_PROCESSED" "$TOTAL_FRAMES"
+    printf "%s\n" "$ETA_STR"
+
+    ITER=$((ITER + 1))
+done
+
+# Final status check
 FAILED=0
 for i in $(seq 0 $((NUM_CHUNKS - 1))); do
-    if wait ${PIDS[$i]}; then
-        ELAPSED=$(( $(date +%s) - ${CHUNK_STARTS[$i]} ))
-        MINS=$((ELAPSED / 60))
-        SECS=$((ELAPSED % 60))
-        echo "  Chunk $i: DONE (${MINS}m ${SECS}s)"
-    else
-        ELAPSED=$(( $(date +%s) - ${CHUNK_STARTS[$i]} ))
-        MINS=$((ELAPSED / 60))
-        SECS=$((ELAPSED % 60))
-        echo "  Chunk $i: FAILED after ${MINS}m ${SECS}s (see $LOGS_DIR/chunk_${i}.log)"
+    if [ "${CHUNK_STATUS[$i]}" = "failed" ]; then
         FAILED=$((FAILED + 1))
     fi
 done

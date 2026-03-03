@@ -1,21 +1,19 @@
 """
-Reference pipeline entry point.
+SAM3 pipeline entry point.
 
-Architecture ported from the reference pipeline (reference/ folder):
+Architecture mirrors the reference pipeline but uses SAM3 instead of SAM2:
   - YOLO detect-only (no BoT-SORT tracking)
-  - SAM2ImagePredictor with centroid fallback
+  - SAM3 Sam3Processor with centroid fallback
   - IdentityMatcher with fixed slots (centroid + area matching)
   - filter_duplicates before matching
   - Contact classification (optional)
 
-The key difference vs sam2_yolo:
-  - No YOLO track IDs → no ID switch problems
-  - Centroid fallback → SAM2 keeps tracking when YOLO loses a rat
-  - IdentityMatcher → simpler, more robust identity management
+This enables direct comparison of SAM3 vs SAM2 segmentation quality,
+with all other pipeline components held constant.
 
 Usage:
-    python -m src.pipelines.reference.run --config configs/local_reference.yaml
-    python -m src.pipelines.reference.run --config configs/hpc_reference.yaml
+    python -m src.pipelines.sam3.run --config configs/local_sam3.yaml
+    python -m src.pipelines.sam3.run --config configs/hpc_sam3.yaml
 """
 
 from __future__ import annotations
@@ -40,10 +38,12 @@ from src.common.contacts import ContactTracker
 from src.common.visualization import (
     apply_masks_overlay, draw_centroids, draw_detections, draw_keypoints, draw_text,
 )
-from src.pipelines.sam2_yolo.models_io import load_models
 from src.pipelines.sam2_yolo.infer_yolo import detect_only
-from .identity_matcher import IdentityMatcher, filter_duplicates, resolve_overlaps
-from .sam2_processor import segment_frame
+from src.pipelines.reference.identity_matcher import (
+    IdentityMatcher, filter_duplicates, resolve_overlaps,
+)
+from .models_io import load_models
+from .sam3_processor import segment_frame
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +55,7 @@ def run_pipeline(
     end_frame: int | None = None,
     chunk_id: int | None = None,
 ) -> Path:
-    """Run the reference-style pipeline.
+    """Run the SAM3 pipeline.
 
     Args:
         config_path: Path to YAML config file.
@@ -65,18 +65,18 @@ def run_pipeline(
         chunk_id: If set, appended to run directory name for chunk parallelism.
     """
     config = load_config(config_path, cli_overrides)
-    tag = f"reference_chunk{chunk_id}" if chunk_id is not None else "reference"
+    tag = f"sam3_chunk{chunk_id}" if chunk_id is not None else "sam3"
     run_dir = setup_run_dir(config, tag=tag)
     setup_logging(run_dir)
 
-    logger.info("Starting Reference pipeline")
+    logger.info("Starting SAM3 pipeline")
     logger.info("Config: %s", config_path)
     logger.info("Run directory: %s", run_dir)
     if start_frame > 0 or end_frame is not None:
         logger.info("Frame range: %d → %s", start_frame, end_frame or "end")
 
-    # Load models (SAM2ImagePredictor + YOLO)
-    yolo, sam = load_models(config)
+    # Load models (Sam3Processor + YOLO)
+    yolo, sam3 = load_models(config)
 
     # Open video
     video_path = config["video_path"]
@@ -93,10 +93,10 @@ def run_pipeline(
     overlays_dir.mkdir(parents=True, exist_ok=True)
     codec = config.get("output", {}).get("video_codec", "XVID")
     ext = ".avi" if codec == "XVID" else ".mp4"
-    sam_ckpt = config.get("models", {}).get("sam2_checkpoint", "")
-    model_name = Path(sam_ckpt).stem if sam_ckpt else "sam2"
+    sam_ckpt = config.get("models", {}).get("sam3_checkpoint", "")
+    model_name = Path(sam_ckpt).stem if sam_ckpt else "sam3"
     today = date.today().strftime("%Y-%m-%d")
-    out_video_path = overlays_dir / f"reference_{model_name}_{today}{ext}"
+    out_video_path = overlays_dir / f"sam3_{model_name}_{today}{ext}"
     writer = create_video_writer(
         out_video_path, props["fps"], props["width"], props["height"], codec=codec,
     )
@@ -117,7 +117,7 @@ def run_pipeline(
     colors = [tuple(c) for c in colors_raw] if colors_raw else None
     max_frames = config.get("scan", {}).get("max_frames")
 
-    # Create IdentityMatcher (replaces SlotTracker)
+    # Create IdentityMatcher (same as reference pipeline)
     im_cfg = config.get("identity_matcher", {})
     matcher = IdentityMatcher(
         max_entities=max_animals,
@@ -164,9 +164,9 @@ def run_pipeline(
             nms_iou=nms_iou,
         )
 
-        # Step 2: SAM2 segmentation with centroid fallback + keypoint prompts
+        # Step 2: SAM3 segmentation with centroid fallback + keypoint prompts
         all_masks, all_scores = segment_frame(
-            sam, frame_rgb, detections, matcher,
+            sam3, frame_rgb, detections, matcher,
             sam_threshold=sam_thr,
             max_entities=max_animals,
             kpt_min_conf=kpt_min_conf,
@@ -187,7 +187,6 @@ def run_pipeline(
         resolve_overlaps(slot_masks, slot_centroids)
 
         # Step 5: Match YOLO detections to slots for keypoint association
-        # Find which detection best matches each slot by centroid proximity
         slot_dets = match_dets_to_slots(detections, slot_centroids, max_animals)
 
         # Set track_id on matched detections so labels show slot index
@@ -234,7 +233,7 @@ def run_pipeline(
             frame_out = draw_centroids(frame_out, render_centroids, colors=render_colors)
 
         active_count = sum(1 for m in slot_masks if m is not None)
-        status_text = f"Animals: {active_count}/{max_animals} | Reference"
+        status_text = f"Animals: {active_count}/{max_animals} | SAM3"
 
         # Add contact info to overlay
         if contact_events:
@@ -286,11 +285,11 @@ def run_pipeline(
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Run reference-style pipeline (IdentityMatcher + centroid fallback).",
+        description="Run SAM3 pipeline (YOLO + SAM3 + IdentityMatcher).",
     )
     parser.add_argument(
         "--config", type=str, required=True,
-        help="Path to YAML config file (e.g., configs/local_reference.yaml).",
+        help="Path to YAML config file (e.g., configs/local_sam3.yaml).",
     )
     parser.add_argument(
         "--start-frame", type=int, default=0,

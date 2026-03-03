@@ -1026,9 +1026,9 @@ class ContactTracker:
                 import pandas as pd
                 df = pd.read_csv(self._csv_path)
             except Exception:
-                df = pd.DataFrame()
+                df = None
 
-            if not df.empty and "time_sec" in df.columns:
+            if df is not None and not df.empty and "time_sec" in df.columns:
                 # ── Page 6: Distance Over Time ──
                 fig, ax = plt.subplots(figsize=(14, 4))
                 zone_colors = {"contact": "#2ca02c", "proximity": "#ffcc00", "independent": "#dddddd"}

@@ -147,7 +147,7 @@ def get_device(config: Dict[str, Any]) -> str:
 # ---------------------------------------------------------------------------
 
 # Keys whose values are filesystem paths and should be resolved.
-_PATH_KEYS = {"video_path", "output_dir", "yolo_path", "sam2_checkpoint"}
+_PATH_KEYS = {"video_path", "output_dir", "yolo_path", "sam2_checkpoint", "sam3_checkpoint"}
 
 
 def _resolve_paths(config: Dict[str, Any]) -> None:

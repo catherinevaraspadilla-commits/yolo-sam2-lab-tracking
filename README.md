@@ -1,6 +1,6 @@
-# Rat Tracking Vision Pipeline (YOLO26 + SAM2)
+# Rat Tracking Vision Pipeline (YOLO26 + SAM2/SAM3)
 
-AI-based workflow for analyzing laboratory rat movement from real-world lab videos. Combines YOLO26 pose detection with SAM2 segmentation for accurate body-part localization (7 keypoints), identity tracking, and social contact classification.
+AI-based workflow for analyzing laboratory rat movement from real-world lab videos. Combines YOLO26 pose detection with SAM2 or SAM3 segmentation for accurate body-part localization (7 keypoints), identity tracking, and social contact classification.
 
 ## Quick Start
 
@@ -12,6 +12,9 @@ pip install -r requirements.txt
 # Run reference pipeline on a short clip (recommended)
 python -m src.pipelines.reference.run --config configs/local_reference.yaml
 
+# Or run sam3 pipeline (requires SAM3 installed)
+python -m src.pipelines.sam3.run --config configs/local_sam3.yaml
+
 # Or run sam2_yolo pipeline
 python -m src.pipelines.sam2_yolo.run --config configs/local_quick.yaml
 
@@ -22,7 +25,7 @@ python -m src.pipelines.reference.run --config configs/local_reference.yaml cont
 ## How It Works
 
 1. **YOLO26** detects rat bounding boxes and 7 body-part keypoints (NMS-free architecture)
-2. **SAM2** segments each detection into pixel-accurate masks
+2. **SAM2 or SAM3** segments each detection into pixel-accurate masks
 3. **IdentityMatcher** maintains consistent identity via Hungarian assignment + state machine
 4. **ContactTracker** classifies social contacts (nose-to-nose, side-by-side, following, etc.)
 5. **Outputs** — overlay videos, contact CSVs, bout reports, session summaries
@@ -32,6 +35,7 @@ python -m src.pipelines.reference.run --config configs/local_reference.yaml cont
 | Pipeline | Best for | Tracking | Speed |
 |----------|----------|----------|-------|
 | **reference** (recommended) | Most videos | IdentityMatcher + centroid fallback | ~25 FPS |
+| sam3 | SAM3 evaluation | IdentityMatcher + centroid fallback | TBD |
 | sam2_yolo | Simple scenes | SlotTracker + BoT-SORT | ~25 FPS |
 | sam2_video | Heavy occlusion | SAM2 temporal memory | ~5-10 FPS |
 
@@ -49,6 +53,7 @@ yolo-sam2-lab-tracking/
   models/
     yolo/                            # YOLO26 weights (modelyolo26.pt)
     sam2/                            # SAM2 checkpoints
+    sam3/                            # SAM3 checkpoint (sam3.pt)
   src/
     common/                          # Shared utilities
       config_loader.py               #   YAML loading, run setup, logging
@@ -57,6 +62,10 @@ yolo-sam2-lab-tracking/
       visualization.py               #   Mask overlays, keypoints
       tracking.py                    #   SlotTracker (sam2_yolo pipeline)
       contacts.py                    #   ContactTracker + bout detection
+      geometry.py                    #   Euclidean distance, detection-slot matching
+      cost.py                        #   Assignment cost computation
+      mask_dedup.py                  #   Mask deduplication by IoU
+      model_loaders.py               #   YOLO model loading
       utils.py                       #   Detection, Keypoint dataclasses
     pipelines/
       reference/                     # Reference pipeline (recommended)
@@ -71,6 +80,10 @@ yolo-sam2-lab-tracking/
         postprocess.py               #   Filtering + tracking
       sam2_video/                    # SAM2 Video pipeline
         run.py                       #   Entry point
+      sam3/                          # SAM3 pipeline (evaluation)
+        run.py                       #   Entry point
+        models_io.py                 #   SAM3 model loading
+        sam3_processor.py            #   SAM3 prompts + coord normalization
   scripts/
     run_parallel.sh                  # Multi-GPU parallel execution
     merge_chunks.py                  # Merge chunk outputs (video + contacts)
@@ -88,6 +101,7 @@ All parameters are in YAML configs — no hardcoded thresholds:
 | Pipeline | Local | HPC |
 |----------|-------|-----|
 | reference | `configs/local_reference.yaml` | `configs/hpc_reference.yaml` |
+| sam3 | `configs/local_sam3.yaml` | `configs/hpc_sam3.yaml` |
 | sam2_yolo | `configs/local_quick.yaml` | `configs/hpc_full.yaml` |
 | sam2_video | `configs/local_sam2video.yaml` | `configs/hpc_sam2video.yaml` |
 
@@ -103,7 +117,9 @@ See [docs/README.md](docs/README.md) for the full documentation index.
 
 Key docs:
 - [Pipeline Comparison](docs/architecture/pipelines.md) — which pipeline to use
+- [Risks & Limitations](docs/architecture/risks.md) — known failure modes and workarounds
 - [Identity Matcher Design](docs/architecture/identity_matcher.md) — how tracking works
+- [Local Setup](docs/setup/local.md) — SAM2/SAM3 installation
 - [HPC Guide](docs/setup/hpc.md) — running on Bunya
 - [Parameter Tuning](docs/guides/parameter_tuning.md) — config reference
 - [YOLO26 Migration](docs/models/yolo26_migration.md) — model upgrade details

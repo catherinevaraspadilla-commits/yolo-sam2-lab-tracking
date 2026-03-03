@@ -12,7 +12,8 @@
 | Document | Description |
 |----------|-------------|
 | [Overview](architecture/overview.md) | Project purpose, models, success criteria |
-| [Pipeline Comparison](architecture/pipelines.md) | sam2_yolo vs sam2_video vs reference — flow, tracking, strengths |
+| [Pipeline Comparison](architecture/pipelines.md) | sam2_yolo vs sam2_video vs reference vs sam3 — flow, tracking, recommendation |
+| [Risks & Limitations](architecture/risks.md) | Known failure modes, workarounds, and risk priorities |
 | [Identity Matcher](architecture/identity_matcher.md) | Hungarian matching + SEPARATE/MERGED state machine design |
 | [Tracking Analysis](architecture/tracking_analysis.md) | BoT-SORT and ByteTrack parameter deep-dive |
 | [Pipeline Improvements](architecture/pipeline_improvements.md) | sam2_yolo pipeline design, BoT-SORT config, debug signals |

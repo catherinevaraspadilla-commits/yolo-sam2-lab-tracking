@@ -1,24 +1,50 @@
 # Pipeline Comparison
 
-This project has 3 pipelines for rat segmentation and tracking.
-All use YOLO (detection + keypoints) and SAM2 (segmentation), but
-differ in how they handle identity and what happens when YOLO fails.
+This project has 4 pipelines for rat segmentation and tracking.
+All use YOLO (detection + keypoints) paired with a segmentation model
+(SAM2 or SAM3), but differ in how they handle identity and what happens
+when YOLO fails.
+
+## Best Pipeline (without SAM3)
+
+> **Use the `reference` pipeline.** It has the best balance of speed,
+> robustness, and batch support. The centroid fallback + IdentityMatcher
+> state machine handles interactions where YOLO loses a rat, without the
+> BoT-SORT ID switching problems of sam2_yolo.
+
+### Decision Tree
+
+```
+Start
+  ├─ Need batch/parallel processing?
+  │    ├─ Yes → reference (default) or sam3 (if installed)
+  │    └─ No  → Any pipeline works
+  ├─ Frequent close interactions / occlusions?
+  │    ├─ Yes → reference or sam3 (state machine handles merges)
+  │    └─ No  → sam2_yolo is fine (simpler, same speed)
+  ├─ Short video + heavy occlusion?
+  │    └─ Yes → sam2_video (temporal memory, but slow + no batch)
+  └─ Want to compare SAM2 vs SAM3 segmentation quality?
+       └─ Yes → Run reference + sam3 on same clip, compare overlays
+```
+
+See also: [Risks and Known Limitations](risks.md)
 
 ---
 
 ## Comparison Table
 
-| Aspect | sam2_yolo | sam2_video | reference |
-|--------|-----------|------------|-----------|
-| **SAM2** | ImagePredictor (stateless) | VideoPredictor (temporal memory) | ImagePredictor (stateless) |
-| **YOLO** | detect + track (BoT-SORT) | detect-only | detect-only |
-| **Tracking** | SlotTracker (YOLO IDs + Hungarian) | SAM2 temporal memory | IdentityMatcher (Hungarian + state machine) |
-| **Centroid fallback** | No | Yes (SAM2 temporal) | Yes (SAM2 point prompt from previous centroid) |
-| **Batch/chunks** | Yes | No | Yes |
-| **Contacts** | Yes | Yes | Yes |
-| **Speed** | Fast (~25 FPS) | Slow (~5-10 FPS) | Fast (~25 FPS) |
-| **Occlusion robustness** | Medium | High | Medium-High |
-| **Recommended** | Videos without frequent interactions | Short videos with heavy occlusion | **Default choice** — best balance |
+| Aspect | sam2_yolo | sam2_video | reference | sam3 |
+|--------|-----------|------------|-----------|------|
+| **Segmentation** | SAM2 ImagePredictor | SAM2 VideoPredictor | SAM2 ImagePredictor | **SAM3** Sam3Processor |
+| **YOLO** | detect + track (BoT-SORT) | detect-only | detect-only | detect-only |
+| **Tracking** | SlotTracker (YOLO IDs) | SAM2 temporal memory | IdentityMatcher (state machine) | IdentityMatcher (state machine) |
+| **Centroid fallback** | No | Yes (SAM2 temporal) | Yes (SAM2 point prompt) | Yes (SAM3 point prompt) |
+| **Batch/chunks** | Yes | No | Yes | Yes |
+| **Contacts** | Yes | Yes | Yes | Yes |
+| **Speed** | Fast (~25 FPS) | Slow (~5-10 FPS) | Fast (~25 FPS) | TBD (depends on SAM3) |
+| **Occlusion robustness** | Medium | High | Medium-High | Medium-High |
+| **Recommended** | No frequent interactions | Short + heavy occlusion | **Default choice** | Evaluation / comparison |
 
 ---
 
@@ -201,26 +227,84 @@ bash scripts/run_parallel.sh data/raw/original_120s.avi
 
 ---
 
+## 4. sam3 (SAM3 evaluation)
+
+**Module:** `src/pipelines/sam3/`
+**Configs:** `configs/local_sam3.yaml`, `configs/hpc_sam3.yaml`
+
+### Per-frame flow
+
+```
+Frame → YOLO detect_only() → boxes + keypoints (NO BoT-SORT)
+      → Sam3Processor.set_image(frame)
+      → For each detection: SAM3.predict(box=..., points=...) → mask
+        (all coords normalized to [0,1])
+      → If YOLO detected fewer rats than active slots:
+          For each unmatched slot:
+            SAM3.predict(point_coords=prev_centroid_normalized) → fallback mask
+      → filter_duplicates() → remove redundant masks
+      → IdentityMatcher.match() → assign to fixed slots
+      → ContactTracker (optional)
+      → Render overlay
+```
+
+### How tracking works
+
+Identical to the reference pipeline — same IdentityMatcher, same state machine,
+same cost function. The only difference is the segmentation model (SAM3 vs SAM2).
+
+### Key difference: coordinate normalization
+
+SAM3 uses **normalized [0,1] coordinates** instead of pixel coordinates.
+The `sam3_processor.py` converts all YOLO-space pixel prompts:
+
+```python
+# Box: [x1, y1, x2, y2] pixels → [x1/w, y1/h, x2/w, y2/h]
+# Points: [[x, y]] pixels → [[x/w, y/h]]
+```
+
+### Requirements
+
+- Python 3.12, PyTorch 2.7+, CUDA 12.6
+- SAM3 package: `pip install -e ./models/sam3/sam3`
+- Checkpoint: `models/sam3/sam3.pt` (~3.2GB from HuggingFace)
+- See [Local Setup](../setup/local.md) and [HPC Setup](../setup/hpc.md) for installation
+
+### Weaknesses
+
+- Same as reference pipeline (no SAM temporal memory, resolution-dependent thresholds)
+- SAM3 checkpoint is ~3.2GB (larger than SAM2 tiny/small)
+- SAM3 requires Python 3.12 (may conflict with existing SAM2 venv)
+- API not yet battle-tested in this project
+
+### When to use
+
+- Evaluating SAM3 vs SAM2 segmentation quality
+- If SAM3 produces better masks on your specific videos
+- Future-proofing: SAM3 will likely improve over time
+
+---
+
 ## Component Comparison
 
 ### Models
 
-| Component | sam2_yolo | sam2_video | reference |
-|-----------|-----------|------------|-----------|
-| YOLO | `model.track()` | `model()` detect-only | `model()` detect-only |
-| SAM2 | `SAM2ImagePredictor` | `SAM2VideoPredictor` | `SAM2ImagePredictor` |
-| SAM2 build | `build_sam2()` | `build_sam2_video_predictor()` | `build_sam2()` |
+| Component | sam2_yolo | sam2_video | reference | sam3 |
+|-----------|-----------|------------|-----------|------|
+| YOLO | `model.track()` | `model()` detect-only | `model()` detect-only | `model()` detect-only |
+| Segmentation | `SAM2ImagePredictor` | `SAM2VideoPredictor` | `SAM2ImagePredictor` | `Sam3Processor` |
+| Model build | `build_sam2()` | `build_sam2_video_predictor()` | `build_sam2()` | `build_sam3_image_model()` |
 
 ### Tracking / Identity
 
-| Component | sam2_yolo | sam2_video | reference |
-|-----------|-----------|------------|-----------|
-| Class | `SlotTracker` | SAM2 internal | `IdentityMatcher` |
-| File | `src/common/tracking.py` | N/A | `src/pipelines/reference/identity_matcher.py` |
-| Identity based on | YOLO track IDs + Hungarian | SAM2 object pointers | Hungarian + soft cost + state machine |
-| Uses YOLO track IDs | Yes (primary) | No | No |
-| Missing frames | 5 frame tolerance | N/A (SAM2 propagates) | Centroid fallback + velocity coasting |
-| Swap guard | Yes | N/A | Yes |
+| Component | sam2_yolo | sam2_video | reference | sam3 |
+|-----------|-----------|------------|-----------|------|
+| Class | `SlotTracker` | SAM2 internal | `IdentityMatcher` | `IdentityMatcher` |
+| File | `src/common/tracking.py` | N/A | `src/pipelines/reference/identity_matcher.py` | (same as reference) |
+| Identity based on | YOLO track IDs + Hungarian | SAM2 object pointers | Hungarian + soft cost + state machine | (same as reference) |
+| Uses YOLO track IDs | Yes (primary) | No | No | No |
+| Missing frames | 5 frame tolerance | N/A (SAM2 propagates) | Centroid fallback + velocity coasting | Centroid fallback + velocity coasting |
+| Swap guard | Yes | N/A | Yes | Yes |
 
 ### Config Files
 
@@ -229,6 +313,7 @@ bash scripts/run_parallel.sh data/raw/original_120s.avi
 | sam2_yolo | `configs/local_quick.yaml` | `configs/hpc_full.yaml` | `slurm/run_infer.sbatch`, `slurm/run_chunks.sbatch` |
 | sam2_video | `configs/local_sam2video.yaml` | `configs/hpc_sam2video.yaml` | `slurm/run_sam2video.sbatch` |
 | reference | `configs/local_reference.yaml` | `configs/hpc_reference.yaml` | `slurm/run_reference.sbatch` |
+| sam3 | `configs/local_sam3.yaml` | `configs/hpc_sam3.yaml` | — |
 
 ### Shared Modules
 
@@ -250,14 +335,17 @@ All pipelines reuse these common modules:
 ### Local test (10s clip)
 
 ```bash
+# reference (recommended)
+python -m src.pipelines.reference.run --config configs/local_reference.yaml
+
+# sam3 (requires sam3 package installed)
+python -m src.pipelines.sam3.run --config configs/local_sam3.yaml
+
 # sam2_yolo
 python -m src.pipelines.sam2_yolo.run --config configs/local_quick.yaml
 
 # sam2_video
 python -m src.pipelines.sam2_video.run --config configs/local_sam2video.yaml
-
-# reference (recommended)
-python -m src.pipelines.reference.run --config configs/local_reference.yaml
 ```
 
 ### Bunya HPC (2 min video)
@@ -265,6 +353,10 @@ python -m src.pipelines.reference.run --config configs/local_reference.yaml
 ```bash
 # reference (recommended)
 bash scripts/run_parallel.sh data/raw/original_120s.avi
+
+# sam3
+python -m src.pipelines.sam3.run --config configs/hpc_sam3.yaml \
+    video_path=data/raw/original_120s.avi
 
 # sam2_yolo
 sbatch --export=ALL,CONFIG=configs/hpc_full.yaml,OVERRIDES="video_path=data/raw/original_120s.avi" slurm/run_infer.sbatch

@@ -320,20 +320,69 @@ python -m pip install --no-cache-dir torch torchvision torchaudio \
 python -c "import torch; print('CUDA:', torch.cuda.is_available())"
 ```
 
-### SAM2
+### SAM2 (required for reference, sam2_yolo, sam2_video)
 
 ```bash
+# Clone SAM2 into models directory
 git clone https://github.com/facebookresearch/segment-anything-2.git models/sam2/segment-anything-2
+
+# Install SAM2 package
 python -m pip install ./models/sam2/segment-anything-2
 
-# Install other dependencies (exclude SAM2 editable install)
+# Install project dependencies (filter out SAM2 editable line)
 grep -v "^-e ./models/sam2/segment-anything-2" requirements.txt > requirements.fixed.txt
 python -m pip install -r requirements.fixed.txt
 pip install ultralytics opencv-python roboflow
 
-# Download SAM2 checkpoints
+# Download SAM2 checkpoints (tiny + large)
 cd models/sam2/segment-anything-2/checkpoints && bash download_ckpts.sh
 cd ~/Balbi/yolo-sam2-lab-tracking
+
+# Verify
+python -c "from sam2.build_sam import build_sam2; print('SAM2 OK')"
+```
+
+### SAM3 (optional — for sam3 pipeline)
+
+SAM3 requires **Python 3.12** and **PyTorch 2.7+** (CUDA 12.6).
+If Bunya's Python module is 3.10, you need a separate venv.
+
+```bash
+# Option A: Same venv (if Bunya has Python 3.12 module)
+module load python/3.12.x-gcccore-xx.x.x  # check: module avail python
+git clone https://github.com/facebookresearch/sam3.git models/sam3/sam3
+python -m pip install ./models/sam3/sam3
+
+# Option B: Use conda for Python 3.12 (if no system module)
+module load anaconda3
+conda create -n sam3 python=3.12 -y
+conda activate sam3
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu126
+git clone https://github.com/facebookresearch/sam3.git models/sam3/sam3
+pip install -e ./models/sam3/sam3
+grep -v "^-e ./models/sam2/segment-anything-2" requirements.txt > requirements.fixed.txt
+pip install -r requirements.fixed.txt
+
+# Download SAM3 checkpoint (~3.2GB)
+export TMPDIR=$HOME/tmp && mkdir -p $TMPDIR
+pip install huggingface_hub
+huggingface-cli login   # paste HF token
+huggingface-cli download facebook/sam3 sam3.pt --local-dir models/sam3/
+
+# Verify
+python -c "from sam3.model_builder import build_sam3_image_model; print('SAM3 OK')"
+```
+
+### Running SAM3 on Bunya
+
+```bash
+# Single GPU test (2 min clip)
+salloc --partition=gpu_cuda --qos=gpu --gres=gpu:1 --time=02:00:00 --mem=64G
+srun --pty bash
+cd ~/Balbi/yolo-sam2-lab-tracking
+# activate the SAM3 environment (conda or venv)
+python -m src.pipelines.sam3.run --config configs/hpc_sam3.yaml \
+    video_path=data/raw/original_120s.avi scan.max_frames=300
 ```
 
 ---
