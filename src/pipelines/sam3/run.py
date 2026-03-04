@@ -277,6 +277,13 @@ def run_pipeline(
         )
         logger.info("Contact analysis: %d bouts detected", total_bouts)
 
+        # Post-process contacts into clean events
+        try:
+            from scripts.postprocess_contacts_simple import run_postprocess
+            run_postprocess(run_dir / "contacts", fps=props["fps"])
+        except Exception as e:
+            logger.warning("Contact post-processing failed: %s", e)
+
     logger.info("Pipeline complete. %d frames processed.", frame_count)
     logger.info("Overlay video: %s", out_video_path)
 

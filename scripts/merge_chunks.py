@@ -545,6 +545,19 @@ def main():
     # Generate merged report PDF
     generate_merged_report(contacts_dir)
 
+    # Post-process contacts into clean events
+    try:
+        from scripts.postprocess_contacts_simple import run_postprocess
+        # Read FPS from merged session_summary.json
+        _merged_summary = contacts_dir / "session_summary.json"
+        _merge_fps = 30.0
+        if _merged_summary.exists():
+            with _merged_summary.open() as _f:
+                _merge_fps = json.load(_f).get("metadata", {}).get("fps", 30.0)
+        run_postprocess(contacts_dir, fps=_merge_fps)
+    except Exception as e:
+        logger.warning("Contact post-processing failed: %s", e)
+
     # Merge logs
     logs_dir = output_dir / "logs"
     logs_dir.mkdir(parents=True, exist_ok=True)
