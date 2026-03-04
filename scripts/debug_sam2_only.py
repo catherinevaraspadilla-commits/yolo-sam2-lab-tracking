@@ -23,6 +23,11 @@ from datetime import date
 from pathlib import Path
 from typing import List, Optional, Tuple
 
+# Ensure project root is on sys.path when run as a script
+_PROJECT_ROOT = str(Path(__file__).resolve().parent.parent)
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
+
 import cv2
 import numpy as np
 
