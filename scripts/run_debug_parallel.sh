@@ -6,12 +6,14 @@
 # Usage (inside salloc with GPUs):
 #   bash scripts/run_debug_parallel.sh yolo data/raw/original_120s.avi
 #   bash scripts/run_debug_parallel.sh sam2 data/raw/original_120s.avi
+#   bash scripts/run_debug_parallel.sh sam2_no_yolo data/raw/original_120s.avi
 #   bash scripts/run_debug_parallel.sh sam2 data/raw/original_120s.avi 4
 #   bash scripts/run_debug_parallel.sh sam2 data/raw/original_120s.avi 4 configs/hpc_reference.yaml
 #   bash scripts/run_debug_parallel.sh sam2 data/raw/original_120s.avi 4 configs/hpc_reference.yaml "--no-fallback"
+#   bash scripts/run_debug_parallel.sh sam2_no_yolo data/raw/original_120s.avi 4 configs/hpc_reference.yaml "--reinit-every 300"
 #
 # Arguments:
-#   $1 - Mode: "yolo" or "sam2" (required)
+#   $1 - Mode: "yolo", "sam2", or "sam2_no_yolo" (required)
 #   $2 - Video path (required)
 #   $3 - Number of chunks/GPUs (default: auto-detect)
 #   $4 - Config file (default: configs/hpc_reference.yaml)
@@ -21,8 +23,8 @@
 
 set -euo pipefail
 
-MODE="${1:?Usage: bash scripts/run_debug_parallel.sh <yolo|sam2> <video_path> [num_chunks] [config] [extra_flags]}"
-VIDEO="${2:?Usage: bash scripts/run_debug_parallel.sh <yolo|sam2> <video_path> [num_chunks] [config] [extra_flags]}"
+MODE="${1:?Usage: bash scripts/run_debug_parallel.sh <yolo|sam2|sam2_no_yolo> <video_path> [num_chunks] [config] [extra_flags]}"
+VIDEO="${2:?Usage: bash scripts/run_debug_parallel.sh <yolo|sam2|sam2_no_yolo> <video_path> [num_chunks] [config] [extra_flags]}"
 NUM_CHUNKS="${3:-0}"
 CONFIG="${4:-configs/hpc_reference.yaml}"
 EXTRA_FLAGS="${5:-}"
@@ -37,8 +39,12 @@ case "$MODE" in
         SCRIPT="scripts/debug_sam2_only.py"
         TAG="sam2_debug_batch"
         ;;
+    sam2_no_yolo)
+        SCRIPT="scripts/debug_sam2_no_yolo.py"
+        TAG="sam2_no_yolo_batch"
+        ;;
     *)
-        echo "ERROR: Mode must be 'yolo' or 'sam2', got '$MODE'"
+        echo "ERROR: Mode must be 'yolo', 'sam2', or 'sam2_no_yolo', got '$MODE'"
         exit 1
         ;;
 esac
