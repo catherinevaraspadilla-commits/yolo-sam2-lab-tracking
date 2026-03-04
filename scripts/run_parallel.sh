@@ -7,12 +7,14 @@
 #   bash scripts/run_parallel.sh data/raw/original_120s.avi
 #   bash scripts/run_parallel.sh data/raw/original_120s.avi 4
 #   bash scripts/run_parallel.sh data/raw/my_video.avi 2 configs/hpc_reference.yaml
+#   bash scripts/run_parallel.sh data/raw/my_video.avi 4 configs/hpc_centroid.yaml "" centroid
 #
 # Arguments:
 #   $1 - Video path (required)
 #   $2 - Number of chunks/GPUs (default: 4)
 #   $3 - Config file (default: configs/hpc_reference.yaml)
 #   $4 - Extra overrides (optional, space-separated key=value)
+#   $5 - Pipeline name: "reference" (default) or "centroid"
 #
 # Output structure:
 #   outputs/runs/<BATCH_ID>/
@@ -38,6 +40,17 @@ VIDEO="${1:?Usage: bash scripts/run_parallel.sh <video_path> [num_chunks] [confi
 NUM_CHUNKS="${2:-4}"
 CONFIG="${3:-configs/hpc_reference.yaml}"
 EXTRA_OVERRIDES="${4:-}"
+PIPELINE="${5:-reference}"
+
+# Validate pipeline name
+case "$PIPELINE" in
+    reference) PIPELINE_MODULE="src.pipelines.reference.run" ;;
+    centroid)  PIPELINE_MODULE="src.pipelines.centroid.run" ;;
+    *)
+        echo "ERROR: Unknown pipeline '$PIPELINE'. Use 'reference' or 'centroid'."
+        exit 1
+        ;;
+esac
 
 # --- Step 0: Validate GPU count ---
 # Count only "GPU N:" lines, not MIG sub-device lines
@@ -58,7 +71,7 @@ echo "  GPUs detected: $NUM_GPUS"
 module load ffmpeg 2>/dev/null || true
 
 # --- Step 1: Create batch directory ---
-BATCH_ID="$(date +%Y-%m-%d_%H%M%S)_reference_batch"
+BATCH_ID="$(date +%Y-%m-%d_%H%M%S)_${PIPELINE}_batch"
 BATCH_DIR="outputs/runs/$BATCH_ID"
 CHUNKS_DIR="$BATCH_DIR/chunks"
 LOGS_DIR="$BATCH_DIR/logs"
@@ -95,6 +108,7 @@ FRAMES_PER_CHUNK=$(( (TOTAL_FRAMES + NUM_CHUNKS - 1) / NUM_CHUNKS ))
 
 echo ""
 echo "=== Parallel Execution Plan ==="
+echo "  Pipeline:   $PIPELINE ($PIPELINE_MODULE)"
 echo "  Batch ID:   $BATCH_ID"
 echo "  Batch dir:  $BATCH_DIR"
 echo "  Config:     $CONFIG"
@@ -125,7 +139,7 @@ for i in $(seq 0 $((NUM_CHUNKS - 1))); do
     CHUNK_STARTS+=("$(date +%s)")
     echo "  Chunk $i: frames $START -> $END (GPU $i)"
 
-    CUDA_VISIBLE_DEVICES=$i python -m src.pipelines.reference.run \
+    CUDA_VISIBLE_DEVICES=$i python -m $PIPELINE_MODULE \
         --config "$CONFIG" \
         --start-frame $START \
         --end-frame $END \
@@ -359,11 +373,11 @@ echo "============================================================"
 echo ""
 echo "# Download results (PowerShell):"
 if [ -n "$ABS_MERGED" ]; then
-    echo "scp ${REMOTE_USER}@${REMOTE_HOST}:${ABS_MERGED} \\"
-    echo "  \"${LOCAL_DIR}\\\""
+    echo "scp ${REMOTE_USER}@${REMOTE_HOST}:${ABS_MERGED} \`"
+    echo "  \"${LOCAL_DIR}\""
 fi
 if [ -n "$ABS_CONTACTS" ]; then
-    echo "scp ${REMOTE_USER}@${REMOTE_HOST}:${ABS_CONTACTS} \\"
-    echo "  \"${LOCAL_DIR}\\\""
+    echo "scp ${REMOTE_USER}@${REMOTE_HOST}:${ABS_CONTACTS} \`"
+    echo "  \"${LOCAL_DIR}\""
 fi
 echo ""

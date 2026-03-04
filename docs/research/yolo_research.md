@@ -177,7 +177,36 @@ or specialized identity modules.
 
 ---
 
-## 6. What This Means for Us
+## 6. Experiment: YOLO on Per-Rat Crops (2026-03-04)
+
+**Script:** `scripts/research/test_yolo_cropped_keypoints.py`
+
+**Idea:** Run YOLO on cropped, mask-isolated rat regions instead of the full
+image. Each crop contains only one rat (non-mask pixels blacked out), so YOLO
+can't confuse identities. This was the "short-term pragmatic option" from the
+proposed pipeline refactor.
+
+**Result:** YOLO keypoints degrade significantly on crops.
+
+- Full image: both rats detected, all 7 keypoints with labels and high confidence
+- Cropped: rat detected but only ~3-4 keypoints, lower confidence, some missing
+
+**Why it fails:**
+- **Out of distribution**: YOLO was trained on full 640x640 images with cage
+  context (floor, walls, both rats visible). A black background with just a rat
+  silhouette is something the model has never seen.
+- **Small crops**: rat bounding boxes are ~120-200px, upscaled to fit YOLO's
+  input — loss of detail, blurry keypoints.
+- **Missing context**: YOLO uses surrounding context (cage edges, other rat) as
+  cues for keypoint localization. Removing context removes information.
+
+**Conclusion:** Running YOLO on per-rat crops is **not viable** with the current
+model. A dedicated pose model trained on cropped instances would be needed, which
+is a larger effort (data collection, labeling, training).
+
+---
+
+## 7. What This Means for Us
 
 ### What we confirmed
 
@@ -194,13 +223,19 @@ from YOLO's per-frame interference.
 - **Problem**: YOLO's keypoints are unreliable (intermittent, swapping), but we
   need them for contacts
 
+### Ruled out
+
+- [x] ~~YOLO on per-rat crops~~ — keypoints degrade, out of distribution (Section 6)
+- [x] ~~Periodic YOLO re-initialization~~ — YOLO swaps break stable propagation
+- [x] ~~SAM2 multimask for tail coverage~~ — picks up background/cage
+
 ### Open questions
 
-- [ ] Can we extract keypoint-like information from SAM2 masks? (e.g., nose as
+- [ ] Can we use YOLO keypoints on the full image with temporal filtering
+  (average across N frames, reject outliers) to smooth out the noise?
+- [ ] Can we extract keypoint-like positions from SAM2 masks? (e.g., nose as
   the mask point closest to the other rat, tail as the furthest point)
-- [ ] Can we use YOLO keypoints with temporal filtering (average across N frames)
-  to smooth out the noise?
-- [ ] Would retraining YOLO with more interaction data reduce flickering enough?
 - [ ] Should we look at DeepLabCut or SLEAP for keypoints instead of YOLO?
-- [ ] Can the centroid-propagation approach be extended to propagate keypoint
-  positions, not just centroids?
+- [ ] Would retraining YOLO with more interaction/occlusion data help?
+- [ ] Can the multimask IoU selection (pick candidate by prev-mask IoU) improve
+  tail coverage without the background problem?
