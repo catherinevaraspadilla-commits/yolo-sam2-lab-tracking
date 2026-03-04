@@ -231,14 +231,16 @@ def _select_interaction_frames(
     min_gap_frames: int,
     interaction_threshold_px: float,
 ) -> List[dict]:
-    """Select well-distributed interaction frames.
+    """Select well-distributed interaction frames across the video.
 
-    Algorithm:
+    Algorithm (temporal windows):
       1. Filter to frames with 2 valid masks and centroid_dist <= threshold
-      2. Score: (1 - dist/threshold)*0.6 + mask_iou*0.4
-      3. Greedy select by score descending with min_gap enforcement
-      4. Re-sort by frame_idx for sequential extraction
+      2. Score each: (1 - dist/threshold)*0.6 + mask_iou*0.4
+      3. Divide video into max_frames temporal windows
+      4. Pick the best-scoring candidate from each window
+      → guarantees even distribution across video duration
     """
+    # --- Step 1: Filter and score candidates ---
     candidates = []
     for row in rows:
         num_masks = int(row["num_masks"])
@@ -267,27 +269,37 @@ def _select_interaction_frames(
     if not candidates:
         return []
 
-    # Sort by score descending
-    candidates.sort(key=lambda r: r["_score"], reverse=True)
+    # --- Step 2: Temporal window selection ---
+    # Divide the full scan range into max_frames windows
+    all_frame_indices = [int(r["frame_idx"]) for r in rows]
+    scan_start = min(all_frame_indices)
+    scan_end = max(all_frame_indices)
+    scan_range = scan_end - scan_start + 1
+    window_size = max(1, scan_range // max_frames)
 
-    # Greedy selection with min_gap
     selected = []
-    selected_indices = set()
+    for w in range(max_frames):
+        win_start = scan_start + w * window_size
+        win_end = win_start + window_size
+        # Find best candidate in this window
+        win_cands = [c for c in candidates if win_start <= c["_frame_idx"] < win_end]
+        if win_cands:
+            best = max(win_cands, key=lambda r: r["_score"])
+            selected.append(best)
 
-    for cand in candidates:
-        fi = cand["_frame_idx"]
-        too_close = any(abs(fi - si) < min_gap_frames for si in selected_indices)
-        if too_close:
-            continue
-        selected.append(cand)
-        selected_indices.add(fi)
-        if len(selected) >= max_frames:
-            break
+    # Enforce min_gap between selected frames
+    if min_gap_frames > 1:
+        filtered = []
+        for s in selected:
+            fi = s["_frame_idx"]
+            too_close = any(abs(fi - f["_frame_idx"]) < min_gap_frames for f in filtered)
+            if not too_close:
+                filtered.append(s)
+        selected = filtered
 
-    # Sort by frame_idx for sequential extraction
     selected.sort(key=lambda r: r["_frame_idx"])
-    logger.info("Selected %d frames (max=%d, min_gap=%d)",
-                len(selected), max_frames, min_gap_frames)
+    logger.info("Selected %d frames across %d windows (window=%d frames, min_gap=%d)",
+                len(selected), max_frames, window_size, min_gap_frames)
     return selected
 
 

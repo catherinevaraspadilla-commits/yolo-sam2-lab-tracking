@@ -51,5 +51,6 @@ extract:
   interaction_threshold_px: 200
 
 # --- Scan limits ---
+# Frame limit is controlled by run_extract.sh (4th argument), not here
 scan:
   max_frames: null

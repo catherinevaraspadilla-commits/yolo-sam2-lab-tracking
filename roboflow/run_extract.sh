@@ -5,13 +5,13 @@
 #
 # Usage (inside salloc with GPUs):
 #   bash roboflow/run_extract.sh data/raw/original.mp4
-#   bash roboflow/run_extract.sh data/raw/original.mp4 4
-#   bash roboflow/run_extract.sh data/raw/original.mp4 4 configs/hpc_extract.yaml
+#   bash roboflow/run_extract.sh data/raw/original.mp4 2 configs/hpc_extract.yaml 4
 #
 # Arguments:
 #   $1 - Video path (required)
-#   $2 - Number of chunks/GPUs (default: 4)
+#   $2 - Number of chunks/GPUs (default: 2)
 #   $3 - Config file (default: configs/hpc_extract.yaml)
+#   $4 - Minutes to scan (default: 4) — limits how much video to process
 #
 # Output:
 #   roboflow/frames/
@@ -23,9 +23,10 @@
 
 set -euo pipefail
 
-VIDEO="${1:?Usage: bash roboflow/run_extract.sh <video_path> [num_chunks] [config]}"
-NUM_CHUNKS="${2:-4}"
+VIDEO="${1:?Usage: bash roboflow/run_extract.sh <video_path> [num_chunks] [config] [minutes]}"
+NUM_CHUNKS="${2:-2}"
 CONFIG="${3:-configs/hpc_extract.yaml}"
+SCAN_MINUTES="${4:-4}"
 
 # --- Step 0: Validate GPU count ---
 NUM_GPUS=$(nvidia-smi -L 2>/dev/null | grep -c "^GPU" || true)
@@ -73,6 +74,21 @@ if [ -z "$TOTAL_FRAMES" ] || [ "$TOTAL_FRAMES" -eq 0 ]; then
     exit 1
 fi
 
+# Cap to requested scan duration
+# Estimate FPS from video (default 30 if unknown)
+VIDEO_FPS=$(python -c "
+import cv2
+cap = cv2.VideoCapture('$VIDEO')
+fps = cap.get(cv2.CAP_PROP_FPS)
+print(int(fps) if fps > 0 else 30)
+cap.release()
+")
+MAX_SCAN_FRAMES=$(( SCAN_MINUTES * 60 * VIDEO_FPS ))
+if [ "$MAX_SCAN_FRAMES" -lt "$TOTAL_FRAMES" ]; then
+    echo "  Limiting scan to ${SCAN_MINUTES} min ($MAX_SCAN_FRAMES frames of $TOTAL_FRAMES)"
+    TOTAL_FRAMES=$MAX_SCAN_FRAMES
+fi
+
 # --- Step 3: Calculate frame ranges ---
 FRAMES_PER_CHUNK=$(( (TOTAL_FRAMES + NUM_CHUNKS - 1) / NUM_CHUNKS ))
 
@@ -82,7 +98,7 @@ echo "  Batch ID:   $BATCH_ID"
 echo "  Batch dir:  $BATCH_DIR"
 echo "  Config:     $CONFIG"
 echo "  Video:      $VIDEO"
-echo "  Frames:     $TOTAL_FRAMES"
+echo "  Scan:       ${SCAN_MINUTES} min ($TOTAL_FRAMES frames)"
 echo "  Chunks:     $NUM_CHUNKS"
 echo "  Per chunk:  ~$FRAMES_PER_CHUNK frames"
 echo ""
