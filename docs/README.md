@@ -26,6 +26,7 @@
 | [Parameter Tuning](guides/parameter_tuning.md) | Config reference with tuning guidance and problem-solution mapping |
 | [Labeling](guides/labeling.md) | Minimum viable labels, hard cases, Roboflow workflow |
 | [Evaluation](guides/evaluation.md) | Qualitative checks, quantitative metrics, comparison framework |
+| [Debugging](guides/debugging.md) | YOLO-only and SAM2-only debug scripts to isolate pipeline problems |
 
 ## Models
 
