@@ -1,6 +1,6 @@
 # Pipeline Comparison
 
-This project has 4 pipelines for rat segmentation and tracking.
+This project has 5 pipelines for rat segmentation and tracking.
 All use YOLO (detection + keypoints) paired with a segmentation model
 (SAM2 or SAM3), but differ in how they handle identity and what happens
 when YOLO fails.
@@ -17,11 +17,14 @@ when YOLO fails.
 ```
 Start
   ├─ Need batch/parallel processing?
-  │    ├─ Yes → reference (default) or sam3 (if installed)
+  │    ├─ Yes → reference (default), centroid, or sam3
   │    └─ No  → Any pipeline works
   ├─ Frequent close interactions / occlusions?
-  │    ├─ Yes → reference or sam3 (state machine handles merges)
+  │    ├─ Yes → centroid (SAM2 propagation, most stable masks)
+  │    │        or reference (state machine handles merges)
   │    └─ No  → sam2_yolo is fine (simpler, same speed)
+  ├─ Want most stable masks with least YOLO dependency?
+  │    └─ Yes → centroid (YOLO only on frame 0, SAM2 drives the rest)
   ├─ Short video + heavy occlusion?
   │    └─ Yes → sam2_video (temporal memory, but slow + no batch)
   └─ Want to compare SAM2 vs SAM3 segmentation quality?
@@ -34,17 +37,17 @@ See also: [Risks and Known Limitations](risks.md)
 
 ## Comparison Table
 
-| Aspect | sam2_yolo | sam2_video | reference | sam3 |
-|--------|-----------|------------|-----------|------|
-| **Segmentation** | SAM2 ImagePredictor | SAM2 VideoPredictor | SAM2 ImagePredictor | **SAM3** Sam3Processor |
-| **YOLO** | detect + track (BoT-SORT) | detect-only | detect-only | detect-only |
-| **Tracking** | SlotTracker (YOLO IDs) | SAM2 temporal memory | IdentityMatcher (state machine) | IdentityMatcher (state machine) |
-| **Centroid fallback** | No | Yes (SAM2 temporal) | Yes (SAM2 point prompt) | Yes (SAM3 point prompt) |
-| **Batch/chunks** | Yes | No | Yes | Yes |
-| **Contacts** | Yes | Yes | Yes | Yes |
-| **Speed** | Fast (~25 FPS) | Slow (~5-10 FPS) | Fast (~25 FPS) | TBD (depends on SAM3) |
-| **Occlusion robustness** | Medium | High | Medium-High | Medium-High |
-| **Recommended** | No frequent interactions | Short + heavy occlusion | **Default choice** | Evaluation / comparison |
+| Aspect | sam2_yolo | sam2_video | reference | centroid | sam3 |
+|--------|-----------|------------|-----------|----------|------|
+| **Segmentation** | SAM2 ImagePredictor | SAM2 VideoPredictor | SAM2 ImagePredictor | SAM2 ImagePredictor (centroid propagation) | **SAM3** Sam3Processor |
+| **YOLO** | detect + track (BoT-SORT) | detect-only | detect-only | detect-only (init + keypoints) | detect-only |
+| **Tracking** | SlotTracker (YOLO IDs) | SAM2 temporal memory | IdentityMatcher (state machine) | SAM2 centroid ordering (inherent) | IdentityMatcher (state machine) |
+| **Centroid fallback** | No | Yes (SAM2 temporal) | Yes (SAM2 point prompt) | N/A (centroids are primary) | Yes (SAM3 point prompt) |
+| **Batch/chunks** | Yes | No | Yes | Yes | Yes |
+| **Contacts** | Yes | Yes | Yes | Yes | Yes |
+| **Speed** | Fast (~25 FPS) | Slow (~5-10 FPS) | Fast (~25 FPS) | Fast (~25 FPS) | TBD (depends on SAM3) |
+| **Occlusion robustness** | Medium | High | Medium-High | High (SAM2 drives masks) | Medium-High |
+| **Recommended** | No frequent interactions | Short + heavy occlusion | **Default choice** | Experimental — most stable masks | Evaluation / comparison |
 
 ---
 
@@ -227,7 +230,88 @@ bash scripts/run_parallel.sh data/raw/original_120s.avi
 
 ---
 
-## 4. sam3 (SAM3 evaluation)
+## 4. centroid (SAM2 centroid propagation — experimental)
+
+**Module:** `src/pipelines/centroid/`
+**Configs:** `configs/local_centroid.yaml`, `configs/hpc_centroid.yaml`
+
+### Architecture
+
+Inverts the reference pipeline's architecture:
+- **SAM2 centroid propagation** drives masks and identity (stable backbone)
+- **YOLO** is demoted to a keypoint provider on the full image (noisy signal)
+- **No IdentityMatcher** — identity is inherent from SAM2 propagation ordering
+- **Temporal carry-over** fills missing keypoints when YOLO misses a rat
+
+### Per-frame flow
+
+```
+Frame 0 (init):
+  YOLO detect_only() → boxes + keypoints
+  → SAM2.predict(box=...) per detection → init masks + centroids
+  → Store keypoints
+
+Frame N (propagation):
+  1. SAM2.predict(
+       point_coords=prev_centroid,      # positive: this rat
+       point_coords=other_centroid,      # negative: other rat
+     ) → 2 stable masks
+  2. Update centroids from new masks
+  3. YOLO detect_only() on full image → 0-2 detections with keypoints
+  4. Assign keypoints to masks:
+     - Check if detection center falls inside a mask
+     - Fallback: assign to nearest mask centroid
+  5. Temporal carry-over (for missing YOLO detections):
+     - Use previous frame's keypoints shifted by centroid delta
+  6. ContactTracker.update()
+  7. Render: masks + keypoints + contacts
+```
+
+### Key differences from reference
+
+| Aspect | Reference | Centroid |
+|--------|-----------|----------|
+| SAM2 prompts | YOLO boxes + keypoints every frame | Centroids from previous frame (YOLO only on init) |
+| Identity source | IdentityMatcher (Hungarian matching) | Centroid ordering (inherent from propagation) |
+| Keypoint assignment | `match_dets_to_slots()` by centroid distance | Mask containment (detection center inside mask) |
+| Missing detections | Centroid fallback (skipped during MERGED) | Temporal carry-over of previous keypoints |
+| State machine | SEPARATE/MERGED | Not needed (SAM2 handles interactions) |
+| YOLO role | Drives everything (boxes → SAM2 → masks) | Keypoint-only provider; boxes ignored after init |
+
+### Batch support
+
+```bash
+# Using run_parallel.sh with pipeline argument
+bash scripts/run_parallel.sh data/raw/original_120s.avi 4 configs/hpc_centroid.yaml "" centroid
+
+# Direct chunk execution
+python -m src.pipelines.centroid.run --config configs/hpc_centroid.yaml \
+    --start-frame 0 --end-frame 750 --chunk-id 0
+```
+
+### Strengths
+
+- Most stable masks: SAM2 centroid propagation proven at ~1 blink in 3600 frames
+- No YOLO dependency for masks (only needs YOLO on frame 0 for initialization)
+- Identity cannot swap during interactions (SAM2 negative prompts handle separation)
+- Simpler architecture: no IdentityMatcher, no state machine
+
+### Weaknesses
+
+- Keypoints still come from YOLO (noisy, can miss rats on some frames)
+- Temporal carry-over is approximate (shifts by centroid delta, not true tracking)
+- If SAM2 loses a mask entirely, no recovery mechanism (would need re-initialization)
+- Experimental: not yet validated on full-length videos
+
+### When to use
+
+- Videos with frequent close interactions where reference pipeline identity swaps
+- When mask stability is the priority over keypoint accuracy
+- Comparing SAM2-driven vs YOLO-driven identity approaches
+
+---
+
+## 5. sam3 (SAM3 evaluation)
 
 **Module:** `src/pipelines/sam3/`
 **Configs:** `configs/local_sam3.yaml`, `configs/hpc_sam3.yaml`
@@ -289,22 +373,22 @@ The `sam3_processor.py` converts all YOLO-space pixel prompts:
 
 ### Models
 
-| Component | sam2_yolo | sam2_video | reference | sam3 |
-|-----------|-----------|------------|-----------|------|
-| YOLO | `model.track()` | `model()` detect-only | `model()` detect-only | `model()` detect-only |
-| Segmentation | `SAM2ImagePredictor` | `SAM2VideoPredictor` | `SAM2ImagePredictor` | `Sam3Processor` |
-| Model build | `build_sam2()` | `build_sam2_video_predictor()` | `build_sam2()` | `build_sam3_image_model()` |
+| Component | sam2_yolo | sam2_video | reference | centroid | sam3 |
+|-----------|-----------|------------|-----------|----------|------|
+| YOLO | `model.track()` | `model()` detect-only | `model()` detect-only | `model()` detect-only (init + keypoints) | `model()` detect-only |
+| Segmentation | `SAM2ImagePredictor` | `SAM2VideoPredictor` | `SAM2ImagePredictor` | `SAM2ImagePredictor` (centroid prompts) | `Sam3Processor` |
+| Model build | `build_sam2()` | `build_sam2_video_predictor()` | `build_sam2()` | `build_sam2()` | `build_sam3_image_model()` |
 
 ### Tracking / Identity
 
-| Component | sam2_yolo | sam2_video | reference | sam3 |
-|-----------|-----------|------------|-----------|------|
-| Class | `SlotTracker` | SAM2 internal | `IdentityMatcher` | `IdentityMatcher` |
-| File | `src/common/tracking.py` | N/A | `src/pipelines/reference/identity_matcher.py` | (same as reference) |
-| Identity based on | YOLO track IDs + Hungarian | SAM2 object pointers | Hungarian + soft cost + state machine | (same as reference) |
-| Uses YOLO track IDs | Yes (primary) | No | No | No |
-| Missing frames | 5 frame tolerance | N/A (SAM2 propagates) | Centroid fallback + velocity coasting | Centroid fallback + velocity coasting |
-| Swap guard | Yes | N/A | Yes | Yes |
+| Component | sam2_yolo | sam2_video | reference | centroid | sam3 |
+|-----------|-----------|------------|-----------|----------|------|
+| Class | `SlotTracker` | SAM2 internal | `IdentityMatcher` | None (inherent) | `IdentityMatcher` |
+| File | `src/common/tracking.py` | N/A | `src/pipelines/reference/identity_matcher.py` | N/A | (same as reference) |
+| Identity based on | YOLO track IDs + Hungarian | SAM2 object pointers | Hungarian + soft cost + state machine | SAM2 centroid propagation ordering | (same as reference) |
+| Uses YOLO track IDs | Yes (primary) | No | No | No | No |
+| Missing frames | 5 frame tolerance | N/A (SAM2 propagates) | Centroid fallback + velocity coasting | Temporal keypoint carry-over | Centroid fallback + velocity coasting |
+| Swap guard | Yes | N/A | Yes | N/A (SAM2 negative prompts) | Yes |
 
 ### Config Files
 
@@ -313,6 +397,7 @@ The `sam3_processor.py` converts all YOLO-space pixel prompts:
 | sam2_yolo | `configs/local_quick.yaml` | `configs/hpc_full.yaml` | `slurm/run_infer.sbatch`, `slurm/run_chunks.sbatch` |
 | sam2_video | `configs/local_sam2video.yaml` | `configs/hpc_sam2video.yaml` | `slurm/run_sam2video.sbatch` |
 | reference | `configs/local_reference.yaml` | `configs/hpc_reference.yaml` | `slurm/run_reference.sbatch` |
+| centroid | `configs/local_centroid.yaml` | `configs/hpc_centroid.yaml` | — (use `run_parallel.sh`) |
 | sam3 | `configs/local_sam3.yaml` | `configs/hpc_sam3.yaml` | — |
 
 ### Shared Modules
@@ -338,6 +423,9 @@ All pipelines reuse these common modules:
 # reference (recommended)
 python -m src.pipelines.reference.run --config configs/local_reference.yaml
 
+# centroid (experimental — SAM2-driven)
+python -m src.pipelines.centroid.run --config configs/local_centroid.yaml
+
 # sam3 (requires sam3 package installed)
 python -m src.pipelines.sam3.run --config configs/local_sam3.yaml
 
@@ -351,8 +439,11 @@ python -m src.pipelines.sam2_video.run --config configs/local_sam2video.yaml
 ### Bunya HPC (2 min video)
 
 ```bash
-# reference (recommended)
+# reference (recommended, default)
 bash scripts/run_parallel.sh data/raw/original_120s.avi
+
+# centroid (experimental)
+bash scripts/run_parallel.sh data/raw/original_120s.avi 4 configs/hpc_centroid.yaml "" centroid
 
 # sam3
 python -m src.pipelines.sam3.run --config configs/hpc_sam3.yaml \
@@ -368,9 +459,15 @@ sbatch --export=ALL,CONFIG=configs/hpc_sam2video.yaml,OVERRIDES="video_path=data
 ### With contacts enabled
 
 ```bash
-# Add contacts.enabled=true
+# reference with contacts
 python -m src.pipelines.reference.run --config configs/local_reference.yaml contacts.enabled=true
 
-# Or on Bunya:
+# centroid with contacts
+python -m src.pipelines.centroid.run --config configs/local_centroid.yaml contacts.enabled=true
+
+# On Bunya (reference):
 bash scripts/run_parallel.sh data/raw/original_120s.avi 4 configs/hpc_reference.yaml "contacts.enabled=true"
+
+# On Bunya (centroid):
+bash scripts/run_parallel.sh data/raw/original_120s.avi 4 configs/hpc_centroid.yaml "contacts.enabled=true" centroid
 ```

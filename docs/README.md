@@ -12,7 +12,7 @@
 | Document | Description |
 |----------|-------------|
 | [Overview](architecture/overview.md) | Project purpose, models, success criteria |
-| [Pipeline Comparison](architecture/pipelines.md) | sam2_yolo vs sam2_video vs reference vs sam3 — flow, tracking, recommendation |
+| [Pipeline Comparison](architecture/pipelines.md) | sam2_yolo vs sam2_video vs reference vs centroid vs sam3 — flow, tracking, recommendation |
 | [Risks & Limitations](architecture/risks.md) | Known failure modes, workarounds, and risk priorities |
 | [Identity Matcher](architecture/identity_matcher.md) | Hungarian matching + SEPARATE/MERGED state machine design |
 | [Tracking Analysis](architecture/tracking_analysis.md) | BoT-SORT and ByteTrack parameter deep-dive |
@@ -53,6 +53,7 @@
 | Document | Description |
 |----------|-------------|
 | [YOLO Limitations](research/yolo_research.md) | Why YOLO fails on identical animals, potato demo comparison, literature review |
+| [Centroid Pipeline Plan](../docs/plans/centroid_pipeline.md) | Design plan for SAM2 centroid propagation pipeline |
 
 ## Findings
 
