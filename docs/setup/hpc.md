@@ -14,6 +14,10 @@ Complete guide for running pipelines on UQ's Bunya HPC cluster.
 - [Transfer Files](#transfer-files)
 - [Monitoring](#monitoring)
 - [Other Run Options](#other-run-options)
+- [Slurm Admin Commands](#slurm-admin-commands)
+- [Recovery (Finding Last Batch)](#recovery-finding-last-batch)
+- [Disk Quota](#disk-quota)
+- [Roboflow Extraction](#roboflow-extraction)
 - [Troubleshooting](#troubleshooting)
 
 ---
@@ -21,6 +25,17 @@ Complete guide for running pipelines on UQ's Bunya HPC cluster.
 ## Quick Start (automated)
 
 The fastest way to process a full video. One script does everything.
+
+### Pre-flight: sync code from local machine
+
+```bash
+# On your local machine (PowerShell or bash)
+git add .
+git commit -m "documentation updated"
+git push origin
+```
+
+### On Bunya
 
 ```bash
 # 1. Connect to Bunya
@@ -166,6 +181,40 @@ python scripts/merge_chunks.py outputs/runs/*_reference_chunk*/
 
 **Difference vs salloc**: sbatch runs in the background. You can disconnect from Bunya and come back later. Slurm handles GPU scheduling. But you need to merge manually after all chunks finish.
 
+### Alternative: sbatch per-chunk (without array)
+
+If `slurm/run_chunks.sbatch` isn't available, submit each chunk individually:
+
+```bash
+cd ~/Balbi/yolo-sam2-lab-tracking
+
+sbatch --job-name=chunk0 --partition=gpu_cuda --qos=gpu --gres=gpu:1 \
+  --cpus-per-task=8 --mem=32G --time=06:00:00 \
+  --output=outputs/slurm/chunk_0_%j.out --error=outputs/slurm/chunk_0_%j.err \
+  --wrap='module load python/3.10.4-gcccore-11.3.0 && source .venv/bin/activate && \
+  python -m src.pipelines.reference.run --config configs/hpc_reference.yaml \
+  --start-frame 0 --end-frame 7500 --chunk-id 0 \
+  video_path=data/raw/original_120s.avi contacts.enabled=true'
+
+sbatch --job-name=chunk1 --partition=gpu_cuda --qos=gpu --gres=gpu:1 \
+  --cpus-per-task=8 --mem=32G --time=06:00:00 \
+  --output=outputs/slurm/chunk_1_%j.out --error=outputs/slurm/chunk_1_%j.err \
+  --wrap='module load python/3.10.4-gcccore-11.3.0 && source .venv/bin/activate && \
+  python -m src.pipelines.reference.run --config configs/hpc_reference.yaml \
+  --start-frame 7500 --end-frame 15000 --chunk-id 1 \
+  video_path=data/raw/original_120s.avi contacts.enabled=true'
+
+# Repeat for chunks 2, 3, etc. adjusting --start-frame, --end-frame, --chunk-id
+
+# Monitor
+squeue -u $USER
+tail -f outputs/slurm/chunk_0_*.out
+
+# When all done, merge
+ls -d outputs/runs/*chunk*
+python scripts/merge_chunks.py outputs/runs/*_reference_chunk*/
+```
+
 ---
 
 ## `run_parallel.sh` Reference
@@ -178,6 +227,7 @@ python scripts/merge_chunks.py outputs/runs/*_reference_chunk*/
 | `$2` | Number of chunks/GPUs | `4` |
 | `$3` | Config file | `configs/hpc_reference.yaml` |
 | `$4` | Extra overrides (space-separated) | none |
+| `$5` | Pipeline name | `reference` |
 
 ### Examples
 
@@ -193,6 +243,12 @@ bash scripts/run_parallel.sh data/raw/original_120s.avi 4 configs/hpc_reference.
 
 # With extra overrides
 bash scripts/run_parallel.sh data/raw/original_120s.avi 4 configs/hpc_reference.yaml "detection.confidence=0.3"
+
+# Centroid pipeline
+bash scripts/run_parallel.sh data/raw/original_120s.avi 4 configs/hpc_centroid.yaml "" centroid
+
+# Centroid with contacts
+bash scripts/run_parallel.sh data/raw/original_120s.avi 2 configs/hpc_centroid.yaml "contacts.enabled=true" centroid
 ```
 
 ### What It Does (step by step)
@@ -280,10 +336,21 @@ outputs/runs/2026-02-27_141500_reference_batch/
 ├── overlays/
 │   └── reference_sam2.1_hiera_large_2026-02-27_merged.avi   <- FINAL VIDEO
 ├── contacts/
-│   ├── contacts_per_frame.csv      <- all frames combined
-│   ├── contact_bouts.csv           <- all bouts combined
-│   └── session_summary.json        <- aggregated totals
-├── contacts_2026-02-27_141500_reference_batch.tar.gz        <- compressed for download
+│   ├── contacts_per_frame.csv          <- all frames combined (raw)
+│   ├── contact_bouts.csv               <- all bouts combined (raw)
+│   ├── session_summary.json            <- aggregated totals (raw)
+│   ├── contacts_real_per_frame.csv     <- post-processed per-frame labels
+│   ├── contacts_real_events.csv        <- clean events with MM:SS timestamps
+│   ├── session_summary_real.json       <- post-processing metadata + comparison
+│   ├── event_log.txt                   <- human-readable event log for validation
+│   └── reports/
+│       ├── timeline_comparison.png     <- raw vs real ethogram timeline
+│       ├── duration_by_type.png        <- total seconds per contact type
+│       ├── events_by_type.png          <- event count per contact type
+│       ├── event_duration_distribution.png <- duration histograms
+│       ├── comparison_by_type.csv      <- per-type statistics
+│       └── comparison_global.csv       <- global statistics
+├── contacts_2026-02-27_141500_reference_batch.tar.gz        <- compressed (includes all above)
 ├── config_used.yaml
 └── logs/
     ├── chunk_0.log
@@ -429,15 +496,42 @@ scp -r s4948012@bunya.rcc.uq.edu.au:~/Balbi/yolo-sam2-lab-tracking/outputs/runs/
 
 ## Monitoring
 
-```bash
-# Check job status (sbatch mode)
-squeue -u $USER
+### During `run_parallel.sh`
 
-# Watch a chunk's progress in real-time (salloc mode)
-tail -f outputs/runs/<batch_id>/logs/chunk_0.log
+If nothing appears after launching, the script is analyzing the video (reading frame count with OpenCV). Wait a moment.
+
+```bash
+# Check if Python processes are running
+ps aux | grep python | grep reference
+
+# Find latest batch directory
+LAST=$(ls -dt outputs/runs/*_batch/ 2>/dev/null | head -1)
+echo "Latest batch: $LAST"
+
+# Check if chunk logs exist yet
+ls -la $LAST/logs/
+
+# Watch a chunk log in real-time
+tail -f $LAST/logs/chunk_0.log
+
+# Quick status of all chunks
+for f in $LAST/logs/chunk_*.log; do echo "=== $(basename $f) ==="; tail -3 "$f"; done
 
 # Check GPU utilization
 nvidia-smi
+```
+
+### During `sbatch` jobs
+
+```bash
+# Check job status
+squeue -u $USER
+
+# View chunk output
+cat outputs/slurm/chunk_0_*.out
+
+# Follow a log in real-time
+tail -f outputs/slurm/chunk_0_*.out
 
 # Check disk usage
 du -sh outputs/runs/
@@ -523,6 +617,98 @@ python -m src.pipelines.sam2_yolo.run --config configs/hpc_full.yaml \
 
 # Contacts only analysis (fast, no SAM2)
 python scripts/analyze_contacts.py --config configs/hpc_full.yaml contacts.enabled=true
+```
+
+---
+
+## Slurm Admin Commands
+
+```bash
+# See available partitions and nodes
+sinfo -p gpu_cuda
+
+# See GPUs across cluster nodes
+sinfo -p gpu_cuda -N -l
+
+# See your running/pending jobs
+squeue -u $USER
+
+# Cancel a specific job
+scancel <JOB_ID>
+
+# Interactive shell on allocated node
+srun --pty bash
+
+# Check GPU status
+nvidia-smi
+
+# List GPU devices
+nvidia-smi -L
+
+# Count available GPUs (not MIG sub-devices)
+nvidia-smi -L | grep -c "^GPU"
+```
+
+---
+
+## Recovery (Finding Last Batch)
+
+If a process was accidentally stopped, or you need to find previous results:
+
+```bash
+# Find the latest batch directory
+LAST=$(ls -dt outputs/runs/*_batch/ 2>/dev/null | head -1)
+echo "Batch: $LAST"
+
+# Check if merged outputs exist
+ls "$LAST/overlays/" 2>/dev/null && ls "$LAST/contacts/" 2>/dev/null || echo "No merged yet"
+
+# Check chunk logs for errors
+for f in $LAST/logs/chunk_*.log; do echo "=== $(basename $f) ==="; tail -3 "$f"; done
+
+# Verify video integrity
+source .venv/bin/activate
+python -c "import cv2; c=cv2.VideoCapture('$LAST/overlays/reference_sam2.1_hiera_large_2026-02-27_merged.avi'); print(f'{int(c.get(cv2.CAP_PROP_FRAME_COUNT))} frames, {c.get(cv2.CAP_PROP_FRAME_COUNT)/c.get(cv2.CAP_PROP_FPS):.1f}s')"
+
+# Manually compress contacts if needed
+tar -czf "$LAST/contacts.tar.gz" -C "$LAST" contacts/
+ls -lh "$LAST/contacts.tar.gz"
+
+# Check if Python processes are still running
+ps aux | grep python | grep reference
+```
+
+---
+
+## Disk Quota
+
+```bash
+# Check disk usage
+du -sh $HOME
+du -sh $HOME/.cache $HOME/.local
+
+# Check pipeline outputs size
+du -sh outputs/runs/
+```
+
+> GPU flags (`--gres`, `--time`, `--mem`) do not affect disk quota.
+
+If quota is full — **nuclear reset** (last resort, destroys everything):
+
+```bash
+rm -rf ./* ./.??*
+mkdir -p ~/Balbi && cd ~/Balbi
+git clone https://github.com/catherinevaraspadilla-commits/yolo-sam2-lab-tracking.git
+```
+
+---
+
+## Roboflow Extraction
+
+Extract annotated frames from a video for Roboflow labeling:
+
+```bash
+bash roboflow/run_extract.sh data/raw/original.mp4 2
 ```
 
 ---
