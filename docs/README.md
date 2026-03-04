@@ -48,6 +48,12 @@
 | [Data Notes](data/notes.md) | Input format, execution modes, domain gap, key challenges |
 | [Output Structure](data/output_structure.md) | Run directories, chunk outputs, merged results, contact files |
 
+## Research
+
+| Document | Description |
+|----------|-------------|
+| [YOLO Limitations](research/yolo_research.md) | Why YOLO fails on identical animals, potato demo comparison, literature review |
+
 ## Findings
 
 | Document | Description |

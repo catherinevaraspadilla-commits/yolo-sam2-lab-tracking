@@ -82,9 +82,6 @@ This answers the question: **is YOLO's per-frame intermittency causing SAM2 fail
 # Pure centroid propagation (YOLO only on frame 0)
 python scripts/debug_sam2_no_yolo.py --config configs/local_reference.yaml
 
-# With periodic YOLO re-initialization every 300 frames
-python scripts/debug_sam2_no_yolo.py --config configs/local_reference.yaml --reinit-every 300
-
 # Specify which frame to initialize from (e.g., frame where both rats are visible)
 python scripts/debug_sam2_no_yolo.py --config configs/local_reference.yaml --init-frame 50
 
@@ -100,16 +97,9 @@ bash scripts/run_debug_parallel.sh sam2_no_yolo data/raw/original_120s.avi
 
 **What to look for:**
 - Status bar shows `mode=CENTROID` (propagation) vs `mode=YOLO-INIT` (initialization)
-- `YOLO used Nx` counter — should be 1 in pure mode, more with `--reinit-every`
+- `YOLO used 1x` — should always be 1
 - If masks are stable → YOLO was the bottleneck in the reference pipeline
-- If masks drift or merge → SAM2 can't track from centroids alone, need better prompts
-
-**Key flags:**
-| Flag | Effect |
-|------|--------|
-| (none) | Pure propagation, YOLO on first frame only |
-| `--reinit-every 300` | Re-initialize from YOLO every 300 frames |
-| `--init-frame 50` | Use frame 50 for initialization instead of auto-detecting |
+- If masks drift or merge → SAM2 can't track from centroids alone
 
 ## HPC Parallel Execution
 
@@ -127,7 +117,6 @@ bash scripts/run_debug_parallel.sh sam2_no_yolo data/raw/original_120s.avi
 
 # With extra flags
 bash scripts/run_debug_parallel.sh sam2 data/raw/original_120s.avi 4 configs/hpc_reference.yaml "--no-fallback"
-bash scripts/run_debug_parallel.sh sam2_no_yolo data/raw/original_120s.avi 4 configs/hpc_reference.yaml "--reinit-every 300"
 ```
 
 ## Output
