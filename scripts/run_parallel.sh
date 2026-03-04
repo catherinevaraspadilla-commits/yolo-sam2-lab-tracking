@@ -380,4 +380,12 @@ if [ -n "$ABS_CONTACTS" ]; then
     echo "scp ${REMOTE_USER}@${REMOTE_HOST}:${ABS_CONTACTS} \`"
     echo "  \"${LOCAL_DIR}\""
 fi
+ABS_EVENT_LOG=""
+if [ -f "$BATCH_DIR/contacts/event_log.txt" ]; then
+    ABS_EVENT_LOG="$(cd "$BATCH_DIR/contacts" && pwd)/event_log.txt"
+    echo ""
+    echo "# Quick-view event log (PowerShell):"
+    echo "scp ${REMOTE_USER}@${REMOTE_HOST}:${ABS_EVENT_LOG} \`"
+    echo "  \"${LOCAL_DIR}\""
+fi
 echo ""
