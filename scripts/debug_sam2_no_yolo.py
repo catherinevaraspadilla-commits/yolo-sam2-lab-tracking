@@ -14,6 +14,9 @@ Usage:
 
     # Use a specific frame for initialization (e.g., frame where both rats are clearly visible):
     python scripts/debug_sam2_no_yolo.py --config configs/local_reference.yaml --init-frame 50
+
+    # Use multimask mode (SAM2 proposes 3 masks, pick largest for better tail coverage):
+    python scripts/debug_sam2_no_yolo.py --config configs/local_reference.yaml --multimask
 """
 
 from __future__ import annotations
@@ -47,8 +50,29 @@ from src.pipelines.sam2_yolo.models_io import load_models
 logger = logging.getLogger(__name__)
 
 
+def _pick_mask(
+    raw_masks: np.ndarray, scores: np.ndarray, sam_threshold: float,
+    multimask: bool,
+) -> Tuple[np.ndarray, float]:
+    """Pick the best mask from SAM2 output.
+
+    When multimask=False: single mask returned by SAM2.
+    When multimask=True: SAM2 returns 3 masks at different scales.
+        Pick the largest mask (by area) to maximize tail coverage.
+    """
+    if not multimask or len(raw_masks) == 1:
+        return raw_masks[0] > sam_threshold, float(scores[0])
+
+    # Pick the largest mask (best tail coverage)
+    binary = [m > sam_threshold for m in raw_masks]
+    areas = [b.sum() for b in binary]
+    best = int(np.argmax(areas))
+    return binary[best], float(scores[best])
+
+
 def _segment_from_boxes(
     predictor, frame_rgb: np.ndarray, detections, sam_threshold: float,
+    multimask: bool = False,
 ) -> Tuple[List[np.ndarray], List[float]]:
     """Segment using YOLO boxes (initialization only)."""
     predictor.set_image(frame_rgb)
@@ -57,10 +81,11 @@ def _segment_from_boxes(
         box = np.array([det.x1, det.y1, det.x2, det.y2])
         raw, sc, _ = predictor.predict(
             point_coords=None, point_labels=None,
-            box=box, multimask_output=False,
+            box=box, multimask_output=multimask,
         )
-        masks.append(raw[0] > sam_threshold)
-        scores.append(float(sc[0]))
+        m, s = _pick_mask(raw, sc, sam_threshold, multimask)
+        masks.append(m)
+        scores.append(s)
     return masks, scores
 
 
@@ -68,6 +93,7 @@ def _segment_from_centroids(
     predictor, frame_rgb: np.ndarray,
     centroids: List[Tuple[float, float]],
     sam_threshold: float,
+    multimask: bool = False,
 ) -> Tuple[List[np.ndarray], List[float]]:
     """Segment using previous-frame centroids as point prompts.
 
@@ -90,10 +116,11 @@ def _segment_from_centroids(
             point_coords=np.array(all_points, dtype=np.float32),
             point_labels=np.array(all_labels, dtype=np.int32),
             box=None,
-            multimask_output=False,
+            multimask_output=multimask,
         )
-        masks.append(raw[0] > sam_threshold)
-        scores.append(float(sc[0]))
+        m, s = _pick_mask(raw, sc, sam_threshold, multimask)
+        masks.append(m)
+        scores.append(s)
 
     return masks, scores
 
@@ -111,13 +138,15 @@ def main() -> None:
                         help="Frame to use for YOLO initialization (default: first frame with 2 detections).")
     parser.add_argument("--reinit-every", type=int, default=0,
                         help="Re-initialize from YOLO every N frames (0 = never, pure propagation).")
+    parser.add_argument("--multimask", action="store_true",
+                        help="Use multimask_output=True (3 masks, pick largest for better tail coverage).")
     args, extra = parser.parse_known_args()
 
     config = load_config(args.config, extra or None)
     tag = f"sam2_no_yolo_chunk{args.chunk_id}" if args.chunk_id is not None else "sam2_no_yolo"
     run_dir = setup_run_dir(config, tag=tag)
     setup_logging(run_dir)
-    logger.info("Starting SAM2 no-YOLO debug (centroid propagation)")
+    logger.info("Starting SAM2 no-YOLO debug (centroid propagation, multimask=%s)", args.multimask)
     logger.info("Run directory: %s", run_dir)
 
     yolo, sam = load_models(config)
@@ -139,7 +168,8 @@ def main() -> None:
         colors = [tuple(c) for c in colors]
 
     codec = config.get("output", {}).get("video_codec", "XVID")
-    suffix = f"reinit{args.reinit_every}" if args.reinit_every > 0 else "pure"
+    mm_tag = "_multimask" if args.multimask else ""
+    suffix = f"reinit{args.reinit_every}{mm_tag}" if args.reinit_every > 0 else f"pure{mm_tag}"
     out_path = run_dir / "overlays" / f"sam2_no_yolo_{suffix}_{date.today()}.avi"
     out_path.parent.mkdir(parents=True, exist_ok=True)
     writer = create_video_writer(out_path, props["fps"], props["width"], props["height"], codec)
@@ -183,7 +213,7 @@ def main() -> None:
 
             if len(dets) >= max_animals or (init_frame_idx is not None and frame_idx == init_frame_idx):
                 # Good init frame (or user-specified)
-                all_masks, all_scores = _segment_from_boxes(sam, frame_rgb, dets, sam_thr)
+                all_masks, all_scores = _segment_from_boxes(sam, frame_rgb, dets, sam_thr, args.multimask)
                 yolo_uses += 1
                 initialized = True
                 mode = f"YOLO-INIT ({len(dets)} det)"
@@ -195,7 +225,7 @@ def main() -> None:
         elif initialized and prev_centroids is not None:
             # Pure centroid propagation — no YOLO
             all_masks, all_scores = _segment_from_centroids(
-                sam, frame_rgb, prev_centroids, sam_thr,
+                sam, frame_rgb, prev_centroids, sam_thr, args.multimask,
             )
             mode = "CENTROID"
 
@@ -227,8 +257,9 @@ def main() -> None:
 
         scores_str = ", ".join(f"{s:.2f}" for s in all_scores) if all_scores else "-"
         n_masks = len(all_masks)
+        mm_label = "multimask" if args.multimask else "single"
         status = (
-            f"SAM2-noYOLO: {n_masks} masks | mode={mode} | "
+            f"SAM2-noYOLO: {n_masks} masks | mode={mode} | {mm_label} | "
             f"scores=[{scores_str}] | YOLO used {yolo_uses}x | frame {frame_idx}"
         )
         frame_out = draw_text(frame_out, status)

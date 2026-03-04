@@ -48,6 +48,12 @@
 | [Data Notes](data/notes.md) | Input format, execution modes, domain gap, key challenges |
 | [Output Structure](data/output_structure.md) | Run directories, chunk outputs, merged results, contact files |
 
+## Findings
+
+| Document | Description |
+|----------|-------------|
+| [Debug Findings](findings.md) | Experimental results from debug scripts — YOLO vs SAM2 root cause analysis |
+
 ## Changes (Observation Tracking)
 
 | Document | Description |
