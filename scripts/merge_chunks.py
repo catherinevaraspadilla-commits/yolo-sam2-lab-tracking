@@ -391,7 +391,7 @@ def generate_merged_report(contacts_dir: Path) -> None:
             fig, ax = plt.subplots(figsize=(10, 4))
             ax.axis("off")
             table_data = []
-            headers = ["Pair", "Total (s)", "N2N", "N2AG", "N2B", "SBS", "FOL"]
+            headers = ["Pair", "Total (s)"] + ct_names
             for pair_key, pair_info in pair_summary.items():
                 row = [pair_key.replace("pair_", "")]
                 row.append(f"{pair_info['total_contact_sec']:.1f}")
