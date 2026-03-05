@@ -39,11 +39,12 @@ from src.common.contacts import ContactTracker
 from src.common.io_video import (
     open_video_reader, get_video_properties, create_video_writer, iter_frames,
 )
-from src.common.metrics import compute_centroid
+from src.common.metrics import compute_centroid, mask_iou as compute_mask_iou
 from src.common.geometry import euclidean_distance
 from src.common.visualization import (
     apply_masks_overlay, draw_centroids, draw_keypoints, draw_text,
 )
+from src.pipelines.reference.identity_matcher import resolve_overlaps
 from src.pipelines.sam2_yolo.infer_yolo import detect_only
 from src.pipelines.sam2_yolo.models_io import load_models
 
@@ -187,6 +188,8 @@ def _carry_over_keypoints(
         carried.x2 += dx
         carried.y2 += dy
         carried.track_id = i + 1
+        # Mark as carried-over so ContactTracker can flag stale keypoints
+        carried.is_carried_over = True
         if carried.keypoints:
             for kp in carried.keypoints:
                 kp.x += dx
@@ -301,6 +304,7 @@ def run_pipeline(
         slot_dets: List[Optional[object]] = [None] * max_animals
         mode = "none"
         has_carry_over = False
+        identity_ambiguous = False
 
         # ------------------------------------------------------------------
         # Step 1: SAM2 masks (centroid propagation or YOLO init)
@@ -352,6 +356,9 @@ def run_pipeline(
                 else:
                     new_centroids.append(None)
 
+            # Resolve overlapping mask pixels by centroid proximity
+            resolve_overlaps(slot_masks, slot_centroids)
+
             # ----------------------------------------------------------
             # Step 2: YOLO on full image — keypoints only
             # ----------------------------------------------------------
@@ -377,14 +384,6 @@ def run_pipeline(
             slot_dets = _carry_over_keypoints(
                 slot_dets, prev_slot_dets, prev_centroids, new_centroids,
             )
-            has_carry_over = any(
-                slot_dets[i] is not None and prev_slot_dets is not None
-                and prev_slot_dets[i] is not None
-                and slot_dets[i] is prev_slot_dets[i]  # wasn't replaced
-                for i in range(max_animals)
-                if i < len(slot_dets)
-            )
-            # Actually check if carry-over happened by comparing with assignment
             n_fresh = sum(1 for d in slot_dets if d is not None and id(d) in {id(x) for x in detections})
             n_total = sum(1 for d in slot_dets if d is not None)
             has_carry_over = n_total > n_fresh
@@ -392,18 +391,41 @@ def run_pipeline(
             if has_carry_over:
                 carried_count += 1
 
+            # ----------------------------------------------------------
+            # Step 4b: Lightweight merge detection (no IdentityMatcher)
+            # ----------------------------------------------------------
+            # If masks overlap heavily, identity is ambiguous — skip contact
+            # classification and write a merged placeholder instead.
+            merge_iou_thr = config.get("contacts", {}).get("mask_overlap_warning", 0.5)
+            identity_ambiguous = False
+            active_mask_pairs = [
+                (i, j)
+                for i in range(max_animals) for j in range(i + 1, max_animals)
+                if slot_masks[i] is not None and slot_masks[j] is not None
+            ]
+            for i, j in active_mask_pairs:
+                if compute_mask_iou(slot_masks[i], slot_masks[j]) > merge_iou_thr:
+                    identity_ambiguous = True
+                    break
+
             prev_centroids = new_centroids
             prev_slot_dets = list(slot_dets)
             mode = f"CENTROID ({len(detections)} YOLO det, {n_fresh} assigned, {n_total - n_fresh} carried)"
+            if identity_ambiguous:
+                mode += " [AMBIGUOUS]"
 
         # ------------------------------------------------------------------
         # Step 5: Contact classification (if enabled)
         # ------------------------------------------------------------------
         contact_events = []
         if contact_tracker is not None and initialized:
-            contact_events = contact_tracker.update(
-                slot_dets, slot_masks, slot_centroids, frame_idx,
-            )
+            if identity_ambiguous:
+                # Masks heavily overlapping — identity uncertain, skip classification
+                contact_tracker.write_merged_placeholder(slot_centroids, frame_idx)
+            else:
+                contact_events = contact_tracker.update(
+                    slot_dets, slot_masks, slot_centroids, frame_idx,
+                )
 
         # ------------------------------------------------------------------
         # Step 6: Render overlay

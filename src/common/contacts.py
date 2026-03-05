@@ -236,12 +236,20 @@ def classify_pair_contacts(
     contact_zone_bl = cfg.get("contact_zone_bl", 0.3)
     proximity_zone_bl = cfg.get("proximity_zone_bl", 1.0)
     sbs_iou_min = cfg.get("sbs_mask_iou_min", 0.02)
-    sbs_max_vel = cfg.get("sbs_max_velocity_px", 5.0)
     sbs_cos_min = cfg.get("sbs_parallel_cos_min", 0.7)
     follow_radius_bl = cfg.get("follow_radius_bl", 0.5)
-    follow_min_speed = cfg.get("follow_min_speed_px", 3.0)
     follow_cos_min = cfg.get("follow_alignment_cos", 0.7)
     mask_overlap_warn = cfg.get("mask_overlap_warning", 0.5)
+
+    # Velocity thresholds: prefer body-length units, fall back to legacy px
+    if "sbs_max_velocity_bl" in cfg:
+        sbs_max_vel = cfg["sbs_max_velocity_bl"] * body_length
+    else:
+        sbs_max_vel = cfg.get("sbs_max_velocity_px", 5.0)
+    if "follow_min_speed_bl" in cfg:
+        follow_min_speed = cfg["follow_min_speed_bl"] * body_length
+    else:
+        follow_min_speed = cfg.get("follow_min_speed_px", 3.0)
 
     contact_radius = body_length * contact_zone_bl
     follow_radius = body_length * follow_radius_bl
@@ -291,7 +299,10 @@ def classify_pair_contacts(
 
     # Quality flags
     quality_flag = None
-    if m_iou > mask_overlap_warn:
+    # Check if either detection has carried-over (stale) keypoints
+    if getattr(det_a, "is_carried_over", False) or getattr(det_b, "is_carried_over", False):
+        quality_flag = "stale_keypoints"
+    elif m_iou > mask_overlap_warn:
         quality_flag = "high_mask_overlap"
     elif _valid_kp_count(det_a, min_conf) < 2 or _valid_kp_count(det_b, min_conf) < 2:
         quality_flag = "missing_keypoints"
@@ -527,6 +538,7 @@ class ContactTracker:
         self._quality_counts = {
             "high_mask_overlap": 0,
             "missing_keypoints": 0,
+            "stale_keypoints": 0,
             "single_detection": 0,
             "merged_state": 0,
         }
@@ -559,19 +571,36 @@ class ContactTracker:
         self._total_frames += 1
 
         # Build slot → detection mapping
+        # Priority 1: use track_id (pipelines set track_id = slot_idx + 1)
+        # Priority 2: fall back to centroid proximity for unmatched detections
         slot_dets: Dict[int, Detection] = {}
+        unmatched_dets = []
         for det in detections:
-            if det is None or det.track_id is None:
+            if det is None:
                 continue
+            if det.track_id is not None:
+                si = det.track_id - 1  # track_id is 1-based
+                if 0 <= si < self.num_slots and si not in slot_dets:
+                    slot_dets[si] = det
+                    continue
+            unmatched_dets.append(det)
+
+        # Proximity fallback for detections without track_id
+        for det in unmatched_dets:
+            det_center = det.center()
+            best_si = None
+            best_dist = self.det_slot_match_radius
             for si in range(self.num_slots):
-                # Match by checking if this slot has a mask and the detection's
-                # track_id matches. We use centroid proximity as fallback.
-                if slot_centroids[si] is not None and slot_masks[si] is not None:
-                    det_center = det.center()
-                    slot_c = slot_centroids[si]
-                    if _euclidean(det_center, slot_c) < self.det_slot_match_radius:
-                        if si not in slot_dets:
-                            slot_dets[si] = det
+                if si in slot_dets:
+                    continue
+                if slot_centroids[si] is None or slot_masks[si] is None:
+                    continue
+                d = _euclidean(det_center, slot_centroids[si])
+                if d < best_dist:
+                    best_dist = d
+                    best_si = si
+            if best_si is not None:
+                slot_dets[best_si] = det
 
         # Compute velocities from previous centroids (EMA-smoothed)
         velocities: Dict[int, Optional[float]] = {}

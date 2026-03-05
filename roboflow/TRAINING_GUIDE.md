@@ -25,8 +25,9 @@ ssh s4948012@bunya.rcc.uq.edu.au
 ### On Bunya (after SSH)
 
 ```bash
-# 2. Copy training files from local to Bunya (run this in a SECOND terminal on your local machine)
-scp train_yolo_pose.py s4948012@bunya.rcc.uq.edu.au:~/Balbi/yolo-sam2-lab-tracking/
+# 2. Pull latest code (includes roboflow/train_yolo_pose.py)
+cd ~/Balbi/yolo-sam2-lab-tracking
+git pull
 
 # 3. Request a GPU with salloc (interactive session)
 salloc --partition=gpu_cuda --qos=gpu --gres=gpu:1 --cpus-per-task=8 --mem=64G --time=12:00:00
@@ -38,8 +39,8 @@ module load python/3.10.4-gcccore-11.3.0
 source .venv/bin/activate
 export TMPDIR=$HOME/tmp && mkdir -p $TMPDIR
 
-# 5. Run training
-python train_yolo_pose.py --epochs 100 --batch 16 --imgsz 640
+# 5. Run training (script is inside roboflow/ folder)
+python roboflow/train_yolo_pose.py --epochs 100 --batch 16 --imgsz 640
 
 # 6. When done, the trained model will be at:
 #    ~/Balbi/yolo-sam2-lab-tracking/runs/pose/train_ratslabs/weights/best.pt
@@ -139,16 +140,16 @@ You can override any setting without editing the file:
 
 ```bash
 # Change epochs and batch size
-python train_yolo_pose.py --epochs 200 --batch 32
+python roboflow/train_yolo_pose.py --epochs 200 --batch 32
 
 # Use a bigger model
-python train_yolo_pose.py --model yolo11m-pose.pt
+python roboflow/train_yolo_pose.py --model yolo11m-pose.pt
 
 # Skip Roboflow download, use existing data
-python train_yolo_pose.py --data /path/to/data.yaml
+python roboflow/train_yolo_pose.py --data /path/to/data.yaml
 
 # Resume interrupted training (picks up from last.pt)
-python train_yolo_pose.py --resume
+python roboflow/train_yolo_pose.py --resume
 ```
 
 ---
@@ -253,7 +254,7 @@ srun --pty bash
 cd ~/Balbi/yolo-sam2-lab-tracking
 module load python/3.10.4-gcccore-11.3.0
 source .venv/bin/activate
-python train_yolo_pose.py --epochs 100 --batch 16
+python roboflow/train_yolo_pose.py --epochs 100 --batch 16
 ```
 
 ---

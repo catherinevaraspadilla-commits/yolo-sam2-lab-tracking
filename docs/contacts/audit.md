@@ -314,15 +314,12 @@ After NC injection, every frame belongs to an event (contact or NC).
 
 **Recommendation:** Validate `fallback_body_length_px` matches your camera/resolution setup.
 
-### 6.2 HIGH: Pixel-based thresholds don't scale with resolution
+### 6.2 ~~HIGH~~ DONE: Pixel-based thresholds don't scale with resolution
 
-`sbs_max_velocity_px: 5.0` and `follow_min_speed_px: 3.0` are in **absolute pixels**.
-On 4K video (2x pixel scale), these become 2x too lenient. On downscaled video,
-they become 2x too strict.
-
-**Affected parameters:** `sbs_max_velocity_px`, `follow_min_speed_px`, `det_slot_match_radius`
-
-**Recommendation:** Consider normalizing by frame width or body length in future versions.
+**Fixed:** `sbs_max_velocity_bl: 0.04` and `follow_min_speed_bl: 0.025` now use
+body-length units. Converted at runtime: `threshold_px = threshold_bl × body_length`.
+Backward-compatible: old `_px` keys still work as fallback.
+All 10 config files updated. `det_slot_match_radius` remains in px (match pipeline scale).
 
 ### 6.3 HIGH: SBS impossible without masks
 
@@ -344,14 +341,12 @@ contacts are most relevant.
 - MERGED frames show as NC in post-processed output
 - Quality flag `merged_state` is set on these frames
 
-### 6.5 MEDIUM: Centroid pipeline stale keypoints
+### 6.5 ~~MEDIUM~~ DONE: Centroid pipeline stale keypoints
 
-When YOLO misses a detection, the centroid pipeline carries forward previous keypoints
-shifted by centroid delta. If the rat changes pose during this gap, contact
-classification uses wrong keypoint positions.
-
-**Consequence:** False contacts or missed contacts during carried frames.
-No quality flag distinguishes carried vs. fresh detections.
+**Fixed:** Carried-over detections now have `is_carried_over=True` attribute.
+`classify_pair_contacts()` checks this and sets `quality_flag="stale_keypoints"`.
+ContactTracker counts these in `_quality_counts["stale_keypoints"]` and reports
+in session summary. Frames with stale keypoints are visible in CSV and event log.
 
 ### 6.6 MEDIUM: FOL single-frame sensitivity
 
@@ -389,10 +384,10 @@ remain correct).
 | `proximity_zone_bl` | 1.0 | body-lengths | **CRITICAL** | Zone boundary |
 | `fallback_body_length_px` | 120 | pixels | **CRITICAL** | Default for first frames |
 | `sbs_mask_iou_min` | 0.02 | ratio | LOW | Very permissive (2% overlap) |
-| `sbs_max_velocity_px` | 5.0 | px/frame | MEDIUM | Not normalized by BL |
+| `sbs_max_velocity_bl` | 0.04 | body-lengths/frame | MEDIUM | Scales with BL (was `_px: 5.0`) |
 | `sbs_parallel_cos_min` | 0.7 | cosine | LOW | Geometric invariant |
 | `follow_radius_bl` | 0.5 | body-lengths | HIGH | Scales with BL |
-| `follow_min_speed_px` | 3.0 | px/frame | MEDIUM | Not normalized by BL |
+| `follow_min_speed_bl` | 0.025 | body-lengths/frame | MEDIUM | Scales with BL (was `_px: 3.0`) |
 | `follow_alignment_cos` | 0.7 | cosine | LOW | Geometric invariant |
 | `follow_min_frames` | 30 | frames | HIGH | 1.0s at 30fps — enforced in `_close_bout()` |
 | `bout_max_gap_frames` | 3 | frames | MEDIUM | Temporal continuity |

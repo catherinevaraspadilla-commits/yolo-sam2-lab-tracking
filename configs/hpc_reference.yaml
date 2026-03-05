@@ -67,10 +67,10 @@ contacts:
   proximity_zone_bl: 1.0
   fallback_body_length_px: 120
   sbs_mask_iou_min: 0.02
-  sbs_max_velocity_px: 5.0
+  sbs_max_velocity_bl: 0.04
   sbs_parallel_cos_min: 0.7
   follow_radius_bl: 0.5
-  follow_min_speed_px: 3.0
+  follow_min_speed_bl: 0.025
   follow_alignment_cos: 0.7
   follow_min_frames: 30
   bout_max_gap_frames: 3
