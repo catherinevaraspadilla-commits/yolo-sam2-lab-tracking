@@ -15,6 +15,7 @@ import argparse
 import csv
 import json
 import logging
+import math
 import shutil
 import subprocess
 import sys
@@ -296,10 +297,10 @@ def generate_merged_report(contacts_dir: Path) -> None:
         with summary_path.open() as f:
             summary = json.load(f)
 
-    ct_names = ["N2N", "N2AG", "N2B", "FOL", "SBS"]
+    ct_names = ["N2N", "N2AG", "N2B", "T2T", "FOL", "SBS"]
     ct_colors = {
         "N2N": "#1f77b4", "N2AG": "#ff7f0e", "N2B": "#2ca02c",
-        "SBS": "#9467bd", "FOL": "#d62728",
+        "T2T": "#8c564b", "SBS": "#9467bd", "FOL": "#d62728",
     }
     meta = summary.get("metadata", {})
     duration = meta.get("video_duration_sec", df["time_sec"].max())
@@ -329,11 +330,16 @@ def generate_merged_report(contacts_dir: Path) -> None:
 
         # ── Page 2: Duration Histograms ──
         if not bouts_df.empty and "duration_sec" in bouts_df.columns:
-            fig, axes = plt.subplots(2, 3, figsize=(12, 7))
-            axes_flat = axes.flatten()
+            n_ct = len(ct_names)
+            n_total = n_ct + 1  # +1 for "ALL"
+            n_cols_hist = 3
+            n_rows_hist = math.ceil(n_total / n_cols_hist)
+            fig, axes = plt.subplots(n_rows_hist, n_cols_hist,
+                                     figsize=(12, 4 * n_rows_hist), squeeze=False)
             all_durations = []
             for idx, ct in enumerate(ct_names):
-                ax = axes_flat[idx]
+                r, c = divmod(idx, n_cols_hist)
+                ax = axes[r][c]
                 durations = bouts_df[bouts_df["contact_type"] == ct]["duration_sec"].tolist()
                 all_durations.extend(durations)
                 if durations:
@@ -342,13 +348,19 @@ def generate_merged_report(contacts_dir: Path) -> None:
                 ax.set_title(ct)
                 ax.set_xlabel("Duration (s)")
                 ax.set_ylabel("Count")
-            ax = axes_flat[5]
+            # "ALL" in next available cell
+            r, c = divmod(n_ct, n_cols_hist)
+            ax = axes[r][c]
             if all_durations:
                 ax.hist(all_durations, bins=min(20, max(5, len(all_durations))),
                         color="#888888", edgecolor="white")
             ax.set_title("ALL")
             ax.set_xlabel("Duration (s)")
             ax.set_ylabel("Count")
+            # Hide unused subplots
+            for idx in range(n_total, n_rows_hist * n_cols_hist):
+                r, c = divmod(idx, n_cols_hist)
+                axes[r][c].set_visible(False)
             plt.suptitle("Bout Duration Distributions", fontsize=13)
             plt.tight_layout()
             pdf.savefig(fig)
@@ -493,6 +505,65 @@ def generate_merged_report(contacts_dir: Path) -> None:
     logger.info("Merged report: %s", pdf_path)
 
 
+def _renumber_bout_ids(chunk_dirs: List[Path], contacts_dir: Path) -> None:
+    """Renumber bout_ids in merged CSVs to avoid collisions across chunks.
+
+    Each chunk starts bout_id at 0, so after naive concatenation there are
+    duplicate IDs.  This function assigns globally unique bout_ids by adding
+    an offset per chunk.
+    """
+    import pandas as pd
+
+    bouts_path = contacts_dir / "contact_bouts.csv"
+    pf_path = contacts_dir / "contacts_per_frame.csv"
+
+    if not bouts_path.exists():
+        return
+
+    bouts_df = pd.read_csv(bouts_path)
+    if bouts_df.empty or "bout_id" not in bouts_df.columns:
+        return
+
+    # Build mapping: (old_bout_id, chunk_start_frame) → new_bout_id
+    # We detect chunk boundaries from frame_idx gaps in per-frame CSV
+    pf_df = pd.read_csv(pf_path) if pf_path.exists() else None
+
+    # Simpler approach: compute per-chunk bout counts from chunk dirs
+    # and build offset mapping
+    offset = 0
+    chunk_bout_counts = []
+    for cdir in chunk_dirs:
+        bp = cdir / "contacts" / "contact_bouts.csv"
+        if not bp.exists():
+            bp = cdir / "contact_bouts.csv"
+        if bp.exists():
+            chunk_bouts = pd.read_csv(bp)
+            n = len(chunk_bouts) if not chunk_bouts.empty else 0
+        else:
+            n = 0
+        chunk_bout_counts.append((offset, n))
+        offset += n
+
+    # Renumber bouts_df sequentially
+    bouts_df["bout_id"] = range(len(bouts_df))
+    bouts_df.to_csv(bouts_path, index=False)
+
+    # Renumber bout_id in per-frame CSV if it exists
+    if pf_df is not None and not pf_df.empty and "bout_id" in pf_df.columns:
+        # Rebuild per-frame bout_ids from bouts_df using frame_idx ranges
+        if "start_frame" in bouts_df.columns and "end_frame" in bouts_df.columns:
+            pf_df["bout_id"] = -1
+            for _, bout in bouts_df.iterrows():
+                mask = (
+                    (pf_df["frame_idx"] >= bout["start_frame"])
+                    & (pf_df["frame_idx"] <= bout["end_frame"])
+                )
+                pf_df.loc[mask, "bout_id"] = int(bout["bout_id"])
+            pf_df.to_csv(pf_path, index=False)
+
+    logger.info("Renumbered bout_ids: %d bouts across %d chunks", len(bouts_df), len(chunk_dirs))
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Merge parallel chunk outputs into a single run.",
@@ -533,11 +604,12 @@ def main():
     # Merge overlay videos
     merge_overlay_videos(chunk_dirs, output_dir)
 
-    # Merge contact CSVs
+    # Merge contact CSVs with bout_id renumbering to avoid collisions
     contacts_dir = output_dir / "contacts"
     contacts_dir.mkdir(parents=True, exist_ok=True)
     merge_csvs(chunk_dirs, "contacts_per_frame.csv", contacts_dir)
     merge_csvs(chunk_dirs, "contact_bouts.csv", contacts_dir)
+    _renumber_bout_ids(chunk_dirs, contacts_dir)
 
     # Merge session summaries
     merge_session_summaries(chunk_dirs, output_dir)

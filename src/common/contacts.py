@@ -5,13 +5,17 @@ Classifies pairwise interactions between tracked animals using keypoint
 geometry, SAM2 mask overlap, and velocity estimation. Produces per-frame
 contact events and groups them into temporal bouts.
 
-Contact types (priority order):
-  1. N2N  — nose-to-nose
-  2. N2AG — nose-to-anogenital
-  3. N2B  — nose-to-body
-  4. T2T  — tail-to-tail
-  5. FOL  — following
-  6. SBS  — side-by-side
+Contact types (priority order — specific → general):
+  1. N2N  — nose-to-nose (most specific keypoint check)
+  2. N2AG — nose-to-anogenital (specific keypoint pair)
+  3. T2T  — tail-to-tail (specific keypoint pair)
+  4. FOL  — following (requires motion + spatial pattern)
+  5. SBS  — side-by-side (requires mask overlap + posture)
+  6. N2B  — nose-to-body (catch-all for remaining nose contact)
+
+N2B is last because its mask-containment check is very broad (any nose
+inside any part of the other rat's mask). Placing it before FOL/SBS/T2T
+would absorb those more specific contact types.
 
 See docs/contacts/design.md for full specification.
 """
@@ -327,88 +331,70 @@ def classify_pair_contacts(
         quality_flag=quality_flag,
     )
 
-    # ── Classification in priority order ──
+    # ── Classification in priority order (specific → general) ──
+    # N2B is last because its mask-containment check is very broad and would
+    # absorb T2T, FOL, and SBS if evaluated first.
 
-    # 1. Nose-to-nose
+    # 1. Nose-to-nose (most specific: both noses close)
     if nose_nose_dist is not None and nose_nose_dist < contact_radius:
         event.contact_type = ContactType.N2N.value
         event.zone = Zone.CONTACT.value
         return event
 
-    # 2. Nose-to-anogenital (asymmetric: check both directions)
-    if n2tb_ab is not None and n2tb_ab < contact_radius:
+    # 2. Nose-to-anogenital (asymmetric: pick closest direction first)
+    n2ag_a = n2tb_ab is not None and n2tb_ab < contact_radius
+    n2ag_b = n2tb_ba is not None and n2tb_ba < contact_radius
+    if n2ag_a and n2ag_b:
+        # Both directions qualify — pick the closer one (no A-first bias)
+        if n2tb_ab <= n2tb_ba:
+            event.investigator_slot = slot_a
+        else:
+            event.investigator_slot = slot_b
+        event.contact_type = ContactType.N2AG.value
+        event.zone = Zone.CONTACT.value
+        return event
+    elif n2ag_a:
         event.contact_type = ContactType.N2AG.value
         event.investigator_slot = slot_a
         event.zone = Zone.CONTACT.value
         return event
-    if n2tb_ba is not None and n2tb_ba < contact_radius:
+    elif n2ag_b:
         event.contact_type = ContactType.N2AG.value
         event.investigator_slot = slot_b
         event.zone = Zone.CONTACT.value
         return event
 
-    # 3. Nose-to-body: mask containment check first, then keypoint distance
-    n2b_detected = False
-    n2b_investigator = None
-    if nose_a is not None and mask_b is not None:
-        ny, nx = int(nose_a[1]), int(nose_a[0])
-        if 0 <= ny < mask_b.shape[0] and 0 <= nx < mask_b.shape[1]:
-            if mask_b[ny, nx]:
-                n2b_detected = True
-                n2b_investigator = slot_a
-    if not n2b_detected and nose_b is not None and mask_a is not None:
-        ny, nx = int(nose_b[1]), int(nose_b[0])
-        if 0 <= ny < mask_a.shape[0] and 0 <= nx < mask_a.shape[1]:
-            if mask_a[ny, nx]:
-                n2b_detected = True
-                n2b_investigator = slot_b
-    # Fallback: keypoint distance to mid_body
-    if not n2b_detected:
-        n2mb_ab = _euclidean(nose_a, mid_body_b) if nose_a and mid_body_b else None
-        n2mb_ba = _euclidean(nose_b, mid_body_a) if nose_b and mid_body_a else None
-        if n2mb_ab is not None and n2mb_ab < contact_radius * 1.5:
-            n2b_detected = True
-            n2b_investigator = slot_a
-        elif n2mb_ba is not None and n2mb_ba < contact_radius * 1.5:
-            n2b_detected = True
-            n2b_investigator = slot_b
-    if n2b_detected:
-        event.contact_type = ContactType.N2B.value
-        event.investigator_slot = n2b_investigator
-        event.zone = Zone.CONTACT.value
-        return event
-
-    # 4. Tail-to-tail: both tail bases close together (rear-to-rear contact)
+    # 3. Tail-to-tail: both tail bases close (rear-to-rear contact)
     tb_tb_dist = _euclidean(tail_base_a, tail_base_b) if tail_base_a and tail_base_b else None
     if tb_tb_dist is not None and tb_tb_dist < contact_radius:
         event.contact_type = ContactType.T2T.value
         event.zone = Zone.CONTACT.value
         return event
 
-    # 5. Following: nose near tail_base of other + both moving + aligned velocity
+    # 4. Following: nose near tail_base of other + both moving + aligned velocity
+    # Pick closer direction first (no A-first bias)
     if vel_vec_a is not None and vel_vec_b is not None:
-        # A follows B?
-        if n2tb_ab is not None and n2tb_ab < follow_radius:
-            if vel_a is not None and vel_b is not None:
-                if vel_a > follow_min_speed and vel_b > follow_min_speed:
-                    v_cos = _cos_angle(vel_vec_a, vel_vec_b)
-                    if v_cos > follow_cos_min:
-                        event.contact_type = ContactType.FOL.value
-                        event.investigator_slot = slot_a
-                        event.zone = Zone.CONTACT.value
-                        return event
-        # B follows A?
-        if n2tb_ba is not None and n2tb_ba < follow_radius:
-            if vel_a is not None and vel_b is not None:
-                if vel_a > follow_min_speed and vel_b > follow_min_speed:
-                    v_cos = _cos_angle(vel_vec_a, vel_vec_b)
-                    if v_cos > follow_cos_min:
-                        event.contact_type = ContactType.FOL.value
-                        event.investigator_slot = slot_b
-                        event.zone = Zone.CONTACT.value
-                        return event
+        fol_a = (n2tb_ab is not None and n2tb_ab < follow_radius
+                 and vel_a is not None and vel_b is not None
+                 and vel_a > follow_min_speed and vel_b > follow_min_speed)
+        fol_b = (n2tb_ba is not None and n2tb_ba < follow_radius
+                 and vel_a is not None and vel_b is not None
+                 and vel_a > follow_min_speed and vel_b > follow_min_speed)
+        if fol_a or fol_b:
+            v_cos = _cos_angle(vel_vec_a, vel_vec_b)
+            if v_cos > follow_cos_min:
+                if fol_a and fol_b:
+                    inv = slot_a if n2tb_ab <= n2tb_ba else slot_b
+                elif fol_a:
+                    inv = slot_a
+                else:
+                    inv = slot_b
+                event.contact_type = ContactType.FOL.value
+                event.investigator_slot = inv
+                event.zone = Zone.CONTACT.value
+                return event
 
-    # 6. Side-by-side: mask overlap + low velocity + parallel orientation
+    # 5. Side-by-side: mask overlap + low velocity + parallel orientation
     if m_iou > sbs_iou_min:
         low_vel_a = vel_a is not None and vel_a < sbs_max_vel
         low_vel_b = vel_b is not None and vel_b < sbs_max_vel
@@ -419,6 +405,48 @@ def classify_pair_contacts(
             event.contact_type = ContactType.SBS.value
             event.zone = Zone.CONTACT.value
             return event
+
+    # 6. Nose-to-body (catch-all: nose inside other's mask or near mid_body)
+    # Guard: skip if nose is near the other's tail_base (N2AG territory) or
+    # nose (N2N territory) — those were already checked above and didn't fire,
+    # meaning they were just outside threshold. Only N2B if the nose is near
+    # the trunk/flank region.
+    n2b_detected = False
+    n2b_investigator = None
+    for nose_x, mask_other, slot_inv, tb_other, nose_other, mid_other in [
+        (nose_a, mask_b, slot_a, tail_base_b, nose_b, mid_body_b),
+        (nose_b, mask_a, slot_b, tail_base_a, nose_a, mid_body_a),
+    ]:
+        if n2b_detected:
+            break
+        if nose_x is None:
+            continue
+        # Guard: if nose is close to the other's tail_base or nose, skip
+        # (those are N2AG/N2N territory — they didn't fire because they were
+        # just outside contact_radius, so N2B shouldn't catch them either)
+        if tb_other is not None and _euclidean(nose_x, tb_other) < contact_radius * 1.5:
+            continue
+        if nose_other is not None and _euclidean(nose_x, nose_other) < contact_radius * 1.5:
+            continue
+        # Mask containment check
+        if mask_other is not None:
+            ny, nx = round(nose_x[1]), round(nose_x[0])
+            if 0 <= ny < mask_other.shape[0] and 0 <= nx < mask_other.shape[1]:
+                if mask_other[ny, nx]:
+                    n2b_detected = True
+                    n2b_investigator = slot_inv
+                    break
+        # Fallback: keypoint distance to mid_body
+        if mid_other is not None:
+            if _euclidean(nose_x, mid_other) < contact_radius * 1.5:
+                n2b_detected = True
+                n2b_investigator = slot_inv
+                break
+    if n2b_detected:
+        event.contact_type = ContactType.N2B.value
+        event.investigator_slot = n2b_investigator
+        event.zone = Zone.CONTACT.value
+        return event
 
     # No specific contact type detected — zone already set
     return event
@@ -475,14 +503,18 @@ class ContactTracker:
         self.bout_max_gap = self.cfg.get("bout_max_gap_frames", 3)
         self.bout_min_dur = self.cfg.get("bout_min_duration_frames", 2)
         self.follow_min_frames = self.cfg.get("follow_min_frames", 5)
-        self.det_slot_match_radius = self.cfg.get("det_slot_match_radius", 100.0)
+        # Match pipeline's max_distance (200px) so detections aren't silently dropped
+        self.det_slot_match_radius = self.cfg.get("det_slot_match_radius", 200.0)
 
         # Body length EMA per slot
         self._bl_ema: Dict[int, float] = {}
         self._bl_alpha = 0.1
 
-        # Velocity tracking: previous centroids per slot
+        # Velocity tracking: previous centroids per slot + EMA smoothing
         self._prev_centroids: Dict[int, Optional[Tuple[float, float]]] = {}
+        self._vel_ema: Dict[int, float] = {}           # smoothed speed per slot
+        self._vel_vec_ema: Dict[int, Tuple[float, float]] = {}  # smoothed vector per slot
+        self._vel_alpha = 0.3  # EMA weight for new velocity (0.3 = moderate smoothing)
 
         # Bout tracking
         self._bouts: List[Bout] = []
@@ -541,17 +573,30 @@ class ContactTracker:
                         if si not in slot_dets:
                             slot_dets[si] = det
 
-        # Compute velocities from previous centroids
+        # Compute velocities from previous centroids (EMA-smoothed)
         velocities: Dict[int, Optional[float]] = {}
         vel_vectors: Dict[int, Optional[Tuple[float, float]]] = {}
+        alpha = self._vel_alpha
         for si in range(self.num_slots):
             curr = slot_centroids[si]
             prev = self._prev_centroids.get(si)
             if curr is not None and prev is not None:
                 dx = curr[0] - prev[0]
                 dy = curr[1] - prev[1]
-                velocities[si] = math.sqrt(dx * dx + dy * dy)
-                vel_vectors[si] = (dx, dy)
+                raw_speed = math.sqrt(dx * dx + dy * dy)
+                # EMA smoothing to reduce centroid jitter
+                if si in self._vel_ema:
+                    self._vel_ema[si] = self._vel_ema[si] * (1 - alpha) + raw_speed * alpha
+                    old_vx, old_vy = self._vel_vec_ema[si]
+                    self._vel_vec_ema[si] = (
+                        old_vx * (1 - alpha) + dx * alpha,
+                        old_vy * (1 - alpha) + dy * alpha,
+                    )
+                else:
+                    self._vel_ema[si] = raw_speed
+                    self._vel_vec_ema[si] = (dx, dy)
+                velocities[si] = self._vel_ema[si]
+                vel_vectors[si] = self._vel_vec_ema[si]
             else:
                 velocities[si] = None
                 vel_vectors[si] = None

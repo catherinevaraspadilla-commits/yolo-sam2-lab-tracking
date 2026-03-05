@@ -456,12 +456,13 @@ def write_real_per_frame(
     )
 
     # real_event_id: assign from contiguous runs (-1 = no event)
+    # Includes NC events so IDs match contacts_real_events.csv
     event_ids = np.full(len(real_types), -1, dtype=int)
     eid = 0
     i = 0
     n = len(real_types)
     while i < n:
-        if real_types[i] not in ("", "NC"):
+        if real_types[i] != "":
             ct = real_types[i]
             while i < n and real_types[i] == ct:
                 event_ids[i] = eid
@@ -497,6 +498,8 @@ def write_event_log(
     total_sec = total_frames / fps
     raw_bouts = _count_raw_bouts(raw_types)
     raw_bouts_total = sum(raw_bouts.values())
+    # Exclude NC events from comparison (raw data has no NC)
+    real_contact_events = len(events_df[events_df["contact_type"] != "NC"]) if len(events_df) > 0 else 0
     real_events_total = len(events_df)
 
     real_contact_frames = int(np.sum((real_types != "") & (real_types != "NC")))
@@ -511,10 +514,11 @@ def write_event_log(
         f"Video duration: {format_time(total_sec)} "
         f"({total_frames} frames @ {fps:.0f}fps)"
     )
+    contact_pct = real_contact_sec / total_sec * 100 if total_sec > 0 else 0.0
     lines.append(
         f"Total events: {real_events_total} | "
         f"Total contact time: {format_duration(real_contact_sec)} "
-        f"({real_contact_sec / total_sec * 100:.1f}% of session)"
+        f"({contact_pct:.1f}% of session)"
     )
     lines.append("")
 
@@ -591,13 +595,14 @@ def write_event_log(
 
         lines.append(line)
 
-    # Filtering impact
+    # Filtering impact (compare contact events only — NC is not in raw data)
     lines.append("")
     lines.append("--- Filtering impact ---")
+    bouts_removed = raw_bouts_total - real_contact_events
     lines.append(
-        f"Raw bouts: {raw_bouts_total} -> Real events: {real_events_total} "
-        f"({raw_bouts_total - real_events_total} removed"
-        f"{f', {(raw_bouts_total - real_events_total) / raw_bouts_total * 100:.1f}% noise' if raw_bouts_total > 0 else ''})"
+        f"Raw bouts: {raw_bouts_total} -> Real contact events: {real_contact_events} "
+        f"({bouts_removed} removed"
+        f"{f', {bouts_removed / raw_bouts_total * 100:.1f}% noise' if raw_bouts_total > 0 else ''})"
     )
     raw_sec = raw_contact_frames / fps
     lines.append(
@@ -697,9 +702,14 @@ def write_real_summary(
             "flicker_rate_pct": round(
                 (raw_contact_frames - real_contact_frames) / raw_contact_frames * 100, 2
             ) if raw_contact_frames > 0 else 0.0,
-            "bouts_removed": sum(raw_bouts.values()) - len(events_df),
+            # Compare contact events only (NC is not in raw data)
+            "bouts_removed": sum(raw_bouts.values()) - (
+                len(events_df[events_df["contact_type"] != "NC"]) if len(events_df) > 0 else 0
+            ),
             "bout_removal_rate_pct": round(
-                (sum(raw_bouts.values()) - len(events_df)) / sum(raw_bouts.values()) * 100, 2
+                (sum(raw_bouts.values()) - (
+                    len(events_df[events_df["contact_type"] != "NC"]) if len(events_df) > 0 else 0
+                )) / sum(raw_bouts.values()) * 100, 2
             ) if sum(raw_bouts.values()) > 0 else 0.0,
         },
     }
@@ -853,7 +863,7 @@ def generate_reports(
     n_types = len(ALL_EVENT_TYPES)
     n_cols = 3
     n_rows = math.ceil((n_types + 1) / n_cols)  # +1 for "All types"
-    fig, axes = plt.subplots(n_rows, n_cols, figsize=(12, 4 * n_rows))
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(12, 4 * n_rows), squeeze=False)
     fig.suptitle("Real Event Duration Distribution", fontsize=13)
 
     for idx, ct in enumerate(ALL_EVENT_TYPES):
@@ -1100,7 +1110,8 @@ def main():
     # Load and validate
     df = load_and_validate(csv_path)
     if df.empty:
-        logger.warning("No data in CSV. Writing empty outputs.")
+        logger.warning("No data in CSV. Nothing to process.")
+        return
 
     logger.info("Loaded %d rows from %s", len(df), csv_path)
 

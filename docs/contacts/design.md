@@ -220,17 +220,25 @@ Per pair per frame, contacts are evaluated in priority order. **Higher-priority
 contacts suppress lower-priority ones** to avoid double-counting:
 
 ```
-1. NOSE_TO_NOSE        (highest — if both noses are within contact radius)
-2. NOSE_TO_ANOGENITAL  (asymmetric — investigator = nose owner)
-3. NOSE_TO_BODY        (catch-all for nose near body; mask or keypoint)
-4. TAIL_TO_TAIL        (both tail bases within contact radius)
-5. FOLLOWING            (requires multi-frame velocity + alignment)
-6. SIDE_BY_SIDE         (requires mask overlap + low velocity + parallel orientation)
+1. NOSE_TO_NOSE        (most specific — both noses within contact radius)
+2. NOSE_TO_ANOGENITAL  (specific — nose near tail_base, picks closer direction)
+3. TAIL_TO_TAIL        (specific — both tail bases within contact radius)
+4. FOLLOWING            (behavioral — requires motion + spatial pattern)
+5. SIDE_BY_SIDE         (postural — requires mask overlap + low velocity + parallel)
+6. NOSE_TO_BODY        (catch-all — nose inside mask or near mid_body)
 ```
 
-**Exception:** N2AG is asymmetric. It's possible for `A→B = N2AG` and
-`B→A = N2N` simultaneously (A sniffs B's anogenital while B turns to face A).
-This is recorded as two separate contact events.
+**N2B is last** because its mask-containment check (nose inside the other rat's
+SAM2 mask) is very broad. Placing it before FOL/SBS/T2T would absorb those more
+specific contact types, since a nose is almost always inside the other rat's mask
+during any close interaction.
+
+**N2B has guards** to prevent absorbing near-miss N2N/N2AG contacts: if the nose
+is within 1.5× contact_radius of the other rat's nose or tail_base, N2B skips
+(those regions are N2N/N2AG territory).
+
+**N2AG picks the closer direction** when both A→B and B→A qualify simultaneously,
+eliminating systematic A-first bias in investigator statistics.
 
 **No contact:** If none of the above trigger, the pair is classified by zone:
 `PROXIMITY` (within proximity zone) or `INDEPENDENT`.

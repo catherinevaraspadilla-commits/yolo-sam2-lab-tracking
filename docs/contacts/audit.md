@@ -81,18 +81,7 @@ Higher-priority types suppress lower-priority ones (first match wins).
 | **Asymmetric** | Yes — investigator = nose owner |
 | **Both directions** | Checked independently; first match wins |
 
-### Priority 3: N2B (Nose-to-body)
-
-| | |
-|---|---|
-| **Behavior** | Snout near trunk/flank. General social investigation. |
-| **Primary check** | Nose pixel inside other rat's SAM2 mask (mask containment) |
-| **Fallback** | `dist(nose, mid_body) < contact_radius * 1.5` (wider radius) |
-| **Keypoints** | nose (4), mid_body (3) |
-| **Asymmetric** | Yes — investigator = nose owner |
-| **Note** | Mask-based check is more accurate; keypoint fallback used when masks unavailable |
-
-### Priority 4: T2T (Tail-to-tail)
+### Priority 3: T2T (Tail-to-tail)
 
 | | |
 |---|---|
@@ -101,7 +90,7 @@ Higher-priority types suppress lower-priority ones (first match wins).
 | **Keypoints** | tail_base (1) of both rats |
 | **Symmetric** | Yes — no investigator assigned |
 
-### Priority 5: FOL (Following)
+### Priority 4: FOL (Following)
 
 | | |
 |---|---|
@@ -113,7 +102,7 @@ Higher-priority types suppress lower-priority ones (first match wins).
 | **Asymmetric** | Yes — investigator = follower (nose owner) |
 | **Temporal** | Cannot fire on frame 0 (no velocity yet) |
 
-### Priority 6: SBS (Side-by-side)
+### Priority 5: SBS (Side-by-side)
 
 | | |
 |---|---|
@@ -123,6 +112,18 @@ Higher-priority types suppress lower-priority ones (first match wins).
 | | 3. `|cos(orient_A, orient_B)| > sbs_parallel_cos_min` (0.7) |
 | **Requires** | SAM2 masks for both rats (IoU = 0 without masks → SBS impossible) |
 | **Symmetric** | Yes — no investigator assigned |
+
+### Priority 6: N2B (Nose-to-body) — catch-all
+
+| | |
+|---|---|
+| **Behavior** | Snout near trunk/flank. General social investigation. |
+| **Primary check** | Nose pixel inside other rat's SAM2 mask (mask containment) |
+| **Fallback** | `dist(nose, mid_body) < contact_radius * 1.5` (wider radius) |
+| **Keypoints** | nose (4), mid_body (3) |
+| **Asymmetric** | Yes — investigator = nose owner |
+| **Guards** | Skips if nose is within 1.5× contact_radius of the other's tail_base or nose (prevents absorbing N2AG/N2N) |
+| **Note** | Last in priority order because mask containment is very broad — would absorb T2T, FOL, SBS if checked earlier |
 
 ### NC (No Contact)
 
@@ -294,8 +295,9 @@ with hardcoded slot indices. For N>2 pipelines, this skipped other pairs.
 
 `event_ids` list mixed int values and empty strings (""). DataFrame had object dtype.
 
-**Fix:** Uses `np.full(len, -1, dtype=int)` — all values are int. Contact events
-get sequential IDs (0, 1, 2, ...) and NC/no-contact frames get -1.
+**Fix:** Uses `np.full(len, -1, dtype=int)` — all values are int. All events
+(including NC) get sequential IDs consistent with `contacts_real_events.csv`.
+After NC injection, every frame belongs to an event (contact or NC).
 
 ---
 
@@ -396,7 +398,7 @@ remain correct).
 | `bout_max_gap_frames` | 3 | frames | MEDIUM | Temporal continuity |
 | `bout_min_duration_frames` | 9 | frames | HIGH | 300ms at 30fps — min meaningful contact |
 | `mask_overlap_warning` | 0.5 | ratio | LOW | Quality flag only |
-| `det_slot_match_radius` | 100.0 | pixels | **CRITICAL** | Det-to-slot matching |
+| `det_slot_match_radius` | 200.0 | pixels | **CRITICAL** | Det-to-slot matching |
 
 ### 7.2 Post-processing parameters (contacts_postprocess_simple.yaml)
 
@@ -494,19 +496,40 @@ NC is never present during filtering — it's a post-hoc label for the output.
 1. ~~**`follow_min_frames` was dead code**~~ — FIXED: now enforced in `_close_bout()`, updated to 30 frames (1.0s)
 2. ~~**Bout gap off-by-one**~~ — NOT A BUG: `+1` is correct (gap=1 for adjacent frames)
 3. ~~**`merged_state_frames` missing from summary JSON**~~ — FIXED
-4. **Document `det_slot_match_radius`** in design.md (critical but undocumented)
+4. ~~**`det_slot_match_radius` mismatch**~~ — FIXED: default 100→200px to match pipeline's match_dets_to_slots() max_distance
 5. ~~**Threshold values too low for rat behavior**~~ — FIXED: `bout_min_duration_frames` 2→9, `follow_min_frames` 5→30, postprocess thresholds updated. See `docs/contacts/threshold_research.md`
 
-### Short-term improvements
+### Classification fixes — ALL DONE (2026-03-05)
 
-5. **Add quality flag for carried keypoints** in centroid pipeline
-6. **Normalize pixel-based thresholds** by body length or frame width
-7. **Make `_bl_alpha` configurable** for different convergence needs
-8. **Add explicit warning** when SBS is disabled due to missing masks
+6. ~~**N2B absorbing FOL/SBS/T2T**~~ — FIXED: priority reordered to N2N → N2AG → T2T → FOL → SBS → N2B (catch-all last). N2B mask-containment was firing before the more specific types could be evaluated.
+7. ~~**N2B near-miss absorption**~~ — FIXED: N2B now guards against nose being within 1.5× contact_radius of the other's tail_base or nose (N2AG/N2N territory). Also uses `round()` instead of `int()` for mask pixel lookup.
+8. ~~**A-first bias in N2AG/FOL**~~ — FIXED: when both directions qualify, picks the closer distance instead of always choosing slot A.
+9. ~~**Velocity noise causing false FOL/missed SBS**~~ — FIXED: velocity is now EMA-smoothed (alpha=0.3) instead of raw frame-to-frame delta. Reduces centroid jitter effects.
+
+### Post-processing & merge fixes — ALL DONE (2026-03-05)
+
+10. ~~**NC event_id inconsistency**~~ — FIXED: `write_real_per_frame()` now assigns event_ids to NC events too, matching `extract_events()`. Previously NC frames got `-1` in per-frame CSV while having proper IDs in events CSV.
+11. ~~**T2T missing from merge report + SBS overwritten**~~ — FIXED: `merge_chunks.py` report now includes all 6 contact types (was missing T2T). Subplot grid dynamically sized with `squeeze=False` to prevent overwrite and crash.
+12. ~~**Bout ID collision across chunks**~~ — FIXED: `_renumber_bout_ids()` assigns globally unique bout_ids after chunk merge. Per-frame CSV bout_ids updated to match.
+13. ~~**ZeroDivisionError on empty CSV**~~ — FIXED: CLI path (`main()`) returns early on empty CSV instead of continuing to divide by zero. Also guarded `total_sec` division in `write_event_log()`.
+14. ~~**Negative bouts_removed**~~ — FIXED: `bouts_removed` now compares raw bouts vs real *contact* events only (excludes NC). Previously NC events inflated the real count, making `raw - real` negative.
+15. ~~**Chart 4 axes crash**~~ — FIXED: added `squeeze=False` to `plt.subplots()` in duration distribution chart. Without it, `axes[row][col]` crashes when `n_rows==1`.
+
+### Known limitations
+
+16. **Orphaned bout_ids in raw per-frame CSV** — ContactTracker assigns bout_ids during active bouts. When `_close_bout()` filters a short bout, those frames retain stale bout_ids. Post-processing addresses this via `real_event_id` in the cleaned CSV. Not fixed in ContactTracker to avoid complexity.
+17. **Bout splitting at chunk boundaries** — bouts spanning chunk boundaries are split into two sub-bouts. If either sub-bout fails the minimum duration filter, that portion is lost. Mitigated by `_renumber_bout_ids()` but not fully resolved.
+
+### Remaining improvements
+
+18. **Add quality flag for carried keypoints** in centroid pipeline
+19. **Normalize pixel-based thresholds** by body length or frame width
+20. **Make `_bl_alpha` configurable** for different convergence needs
+21. **Add explicit warning** when SBS is disabled due to missing masks
+22. **Centroid pipeline MERGED state** — no IdentityMatcher means contacts classified during unreliable mask states
 
 ### Future considerations
 
-9. **Temporal FOL validation** — require minimum consecutive frames before confirming FOL
-10. **MERGED state contact inference** — use pre-merge contact type to infer during MERGED
-11. **N>2 support** — fix single-detection placeholder for multi-animal experiments
-12. **Body length validation** — warn if estimated BL differs significantly from fallback
+23. **MERGED state contact inference** — use pre-merge contact type to infer during MERGED
+24. **N>2 support** — fix single-detection placeholder for multi-animal experiments
+25. **Body length validation** — warn if estimated BL differs significantly from fallback
