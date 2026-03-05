@@ -123,23 +123,23 @@ Link:
 
 Our ContactTracker post-processing applies **3 simple rules** in sequence. The defaults are justified by the literature above:
 
-### Rule 1: Majority-vote smoothing (window = 5 frames)
+### Rule 1: Majority-vote smoothing (window = 7 frames)
 
-- **What it does**: Slides a 5-frame window over per-frame contact labels. Each frame adopts the most frequent label in its window.
-- **Why 5 frames**: At 30 fps, 5 frames = 167 ms. MARS found that 1–3 frame glitches were their most common classifier error. A 5-frame window corrects isolated 1–2 frame flickers (center of the window) without over-smoothing. This is comparable to MARS's "3-frame moving average" but uses majority vote to preserve discrete labels rather than averaging probabilities.
+- **What it does**: Slides a 7-frame window over per-frame contact labels. Each frame adopts the most frequent label in its window.
+- **Why 7 frames**: At 30 fps, 7 frames = 233 ms. MARS found that 1–3 frame glitches were their most common classifier error. A 7-frame window corrects isolated 2–3 frame flickers while staying short enough to preserve real behavioral transitions (~300ms+). This is wider than MARS's "3-frame average" to account for the noisier keypoint-based classification in our pipeline.
 - **Literature support**: MARS (3-frame average), BehaviorDEPOT (sliding window convolution), B-SOiD (inherent temporal smoothing via frame-shifting).
 
-### Rule 2: Gap bridging (max_gap = 3 frames, ~100 ms at 30 fps)
+### Rule 2: Gap bridging (max_gap = 5 frames, ~167 ms at 30 fps)
 
-- **What it does**: If the same contact type reappears within 3 frames of ending, the gap is filled and the bout continues.
-- **Why 3 frames / 100 ms**: MARS explicitly found "brief sequences (1-3 frames) of false negatives" as the dominant error mode. JAABA's two-pass architecture applies gap-fill *before* minimum bout filtering — the same order we use. 100 ms is well below any reasonable behavioral transition time for rodent social contacts.
+- **What it does**: If the same contact type reappears within 5 frames of ending, the gap is filled and the bout continues.
+- **Why 5 frames / 167 ms**: MARS explicitly found "brief sequences (1-3 frames) of false negatives" as the dominant error mode, but our keypoint-based classifier can produce 3–5 frame dropouts when a keypoint confidence briefly dips below threshold. 167 ms is well below any reasonable behavioral transition time for rodent social contacts, so bridging at this level only merges within-bout gaps without merging distinct events.
 - **Literature support**: JAABA (gap-fill as first pass), SimBA (minimum bout bridges gaps), MARS (1–3 frame FN as dominant error).
 
-### Rule 3: Minimum bout duration (default = 0.3 s = 9 frames at 30 fps)
+### Rule 3: Minimum bout duration (default = 0.5 s = 15 frames at 30 fps)
 
-- **What it does**: After smoothing and gap bridging, bouts shorter than 0.3 s are discarded as noise.
-- **Why 0.3 s**: A-SOiD found that 200 ms (10th percentile of CalMS21 annotated bouts) was the floor for resolving real behavioral events, with 400 ms as the default. Our 300 ms sits between these values — conservative enough to preserve brief but real contacts (a quick nose-to-nose sniff) while removing sub-200 ms flickers. Freezing behaviors require 1–2 s minimums, but social contacts are faster; 0.3 s is appropriate for sniffing/following events.
-- **Literature support**: A-SOiD (200–400 ms range), DeepEthogram (1–2 frames as floor), freezing literature (1–2 s upper bound, too long for social contacts).
+- **What it does**: After smoothing and gap bridging, bouts shorter than 0.5 s are discarded as noise.
+- **Why 0.5 s**: A-SOiD found that 200 ms (10th percentile of CalMS21 annotated bouts) was the floor for resolving real behavioral events, with 400 ms as the default. Research on rat social behavior indicates that meaningful social contacts require sustained interaction — a brief nose-touch under 300 ms is more likely detector noise than intentional social investigation. The 500 ms threshold ensures only sustained contacts are reported, sitting above the A-SOiD 400 ms default while remaining practical for rat social contacts. See [Threshold Research](contacts/threshold_research.md) for detailed literature review.
+- **Literature support**: A-SOiD (200–400 ms range), SimBA (per-classifier thresholds, nosing=50ms to adjacent lying=750ms), freezing literature (1–2 s upper bound), rat behavioral studies (300 ms minimum for meaningful social contact).
 
 ### Why not Kleinberg / HMM?
 

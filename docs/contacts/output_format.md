@@ -30,7 +30,7 @@ One row per animal pair per frame. For 2 rats this means one row per frame
 | `rat_a_track_id` | int/null | YOLO track ID of rat A (may change across video) |
 | `rat_b_track_id` | int/null | YOLO track ID of rat B |
 | `zone` | str | `"contact"`, `"proximity"`, or `"independent"` |
-| `contact_type` | str/null | `"N2N"`, `"N2AG"`, `"N2B"`, `"SBS"`, `"FOL"`, or null if no contact |
+| `contact_type` | str/null | `"N2N"`, `"N2AG"`, `"N2B"`, `"T2T"`, `"FOL"`, `"SBS"`, or null if no contact |
 | `investigator_slot` | int/null | For asymmetric contacts (N2AG, N2B, FOL): the active rat's slot |
 | `nose_nose_dist_px` | float/null | Distance between noses in pixels (null if keypoints missing) |
 | `nose_nose_dist_bl` | float/null | Same, normalized by body length |
@@ -69,7 +69,7 @@ allowing small gaps (up to `bout_max_gap_frames`).
 | Column | Type | Description |
 |--------|------|-------------|
 | `bout_id` | int | Unique bout identifier |
-| `contact_type` | str | `"N2N"`, `"N2AG"`, `"N2B"`, `"SBS"`, `"FOL"` |
+| `contact_type` | str | `"N2N"`, `"N2AG"`, `"N2B"`, `"T2T"`, `"FOL"`, `"SBS"` |
 | `rat_a_slot` | int | Slot index of rat A |
 | `rat_b_slot` | int | Slot index of rat B |
 | `investigator_slot` | int/null | For asymmetric types: the active rat |

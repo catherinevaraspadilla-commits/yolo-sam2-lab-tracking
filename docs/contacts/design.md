@@ -20,7 +20,7 @@ neuroscience.
 
 ## 2. Contact Types
 
-Five contact types, ordered by scientific priority for social phenotyping:
+Six contact types plus NC (No Contact), ordered by classification priority:
 
 ### 2.1 Nose-to-nose (N2N)
 
@@ -93,7 +93,27 @@ if mask_B[int(nose_A.y), int(nose_A.x)] == True:
 **Mask-based check is preferred** when SAM2 masks are available: if the nose
 keypoint of rat A falls inside the mask of rat B, that's definitive body contact.
 
-### 2.4 Side-by-side (SBS)
+### 2.4 Tail-to-tail (T2T)
+
+| | |
+|---|---|
+| **Behavior** | Both tail bases close together. Rear-to-rear contact. |
+| **Geometry** | `dist(tail_base_A, tail_base_B) < contact_radius` |
+| **Keypoints used** | `tail_base` (index 1) of both rats |
+| **Confidence** | **High** — tail_base is reliably detected |
+| **Symmetric** | No investigator assigned |
+
+**Detection rule:**
+```
+tail_base_A = det_A.keypoints[1]
+tail_base_B = det_B.keypoints[1]
+if tail_base_A.conf >= min_kp_conf and tail_base_B.conf >= min_kp_conf:
+    d = euclidean(tail_base_A, tail_base_B)
+    if d < contact_radius:
+        → TAIL_TO_TAIL
+```
+
+### 2.5 Side-by-side (SBS)
 
 | | |
 |---|---|
@@ -119,7 +139,7 @@ if iou > sbs_iou_threshold:
             → SIDE_BY_SIDE
 ```
 
-### 2.5 Following (FOL)
+### 2.6 Following (FOL)
 
 | | |
 |---|---|
@@ -201,10 +221,11 @@ contacts suppress lower-priority ones** to avoid double-counting:
 
 ```
 1. NOSE_TO_NOSE        (highest — if both noses are within contact radius)
-2. NOSE_TO_ANOGENITAL  (asymmetric — can co-occur with #1 if A→B and B→A)
-3. NOSE_TO_BODY        (catch-all for nose near body)
-4. FOLLOWING            (requires multi-frame velocity)
-5. SIDE_BY_SIDE         (requires mask overlap + low velocity)
+2. NOSE_TO_ANOGENITAL  (asymmetric — investigator = nose owner)
+3. NOSE_TO_BODY        (catch-all for nose near body; mask or keypoint)
+4. TAIL_TO_TAIL        (both tail bases within contact radius)
+5. FOLLOWING            (requires multi-frame velocity + alignment)
+6. SIDE_BY_SIDE         (requires mask overlap + low velocity + parallel orientation)
 ```
 
 **Exception:** N2AG is asymmetric. It's possible for `A→B = N2AG` and
@@ -342,11 +363,11 @@ contacts:
   follow_radius_bl: 0.5        # nose-to-tail_base distance (in BL)
   follow_min_speed_px: 3.0     # min centroid displacement per frame (px)
   follow_alignment_cos: 0.7    # min cos(angle) between velocity vectors
-  follow_min_frames: 5         # min consecutive frames to count as following
+  follow_min_frames: 30        # min frames to count as following (~1.0s at 30fps)
 
   # Bout grouping
   bout_max_gap_frames: 3       # max frames gap within a bout
-  bout_min_duration_frames: 2  # min frames for a bout to be recorded
+  bout_min_duration_frames: 9  # min frames for a bout (~300ms at 30fps)
 
   # Quality flags
   mask_overlap_warning: 0.5    # mask_iou above this = tracking error flag

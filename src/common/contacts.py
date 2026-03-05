@@ -9,8 +9,9 @@ Contact types (priority order):
   1. N2N  — nose-to-nose
   2. N2AG — nose-to-anogenital
   3. N2B  — nose-to-body
-  4. FOL  — following
-  5. SBS  — side-by-side
+  4. T2T  — tail-to-tail
+  5. FOL  — following
+  6. SBS  — side-by-side
 
 See docs/contacts/design.md for full specification.
 """
@@ -42,6 +43,7 @@ class ContactType(str, Enum):
     N2N = "N2N"
     N2AG = "N2AG"
     N2B = "N2B"
+    T2T = "T2T"
     FOL = "FOL"
     SBS = "SBS"
 
@@ -376,7 +378,14 @@ def classify_pair_contacts(
         event.zone = Zone.CONTACT.value
         return event
 
-    # 4. Following: nose near tail_base + both moving + aligned velocity
+    # 4. Tail-to-tail: both tail bases close together (rear-to-rear contact)
+    tb_tb_dist = _euclidean(tail_base_a, tail_base_b) if tail_base_a and tail_base_b else None
+    if tb_tb_dist is not None and tb_tb_dist < contact_radius:
+        event.contact_type = ContactType.T2T.value
+        event.zone = Zone.CONTACT.value
+        return event
+
+    # 5. Following: nose near tail_base of other + both moving + aligned velocity
     if vel_vec_a is not None and vel_vec_b is not None:
         # A follows B?
         if n2tb_ab is not None and n2tb_ab < follow_radius:
@@ -399,7 +408,7 @@ def classify_pair_contacts(
                         event.zone = Zone.CONTACT.value
                         return event
 
-    # 5. Side-by-side: mask overlap + low velocity + parallel orientation
+    # 6. Side-by-side: mask overlap + low velocity + parallel orientation
     if m_iou > sbs_iou_min:
         low_vel_a = vel_a is not None and vel_a < sbs_max_vel
         low_vel_b = vel_b is not None and vel_b < sbs_max_vel
@@ -465,6 +474,8 @@ class ContactTracker:
         self.fallback_bl = self.cfg.get("fallback_body_length_px", 120.0)
         self.bout_max_gap = self.cfg.get("bout_max_gap_frames", 3)
         self.bout_min_dur = self.cfg.get("bout_min_duration_frames", 2)
+        self.follow_min_frames = self.cfg.get("follow_min_frames", 5)
+        self.det_slot_match_radius = self.cfg.get("det_slot_match_radius", 100.0)
 
         # Body length EMA per slot
         self._bl_ema: Dict[int, float] = {}
@@ -485,6 +496,7 @@ class ContactTracker:
             "high_mask_overlap": 0,
             "missing_keypoints": 0,
             "single_detection": 0,
+            "merged_state": 0,
         }
 
         # Open per-frame CSV for streaming writes
@@ -525,7 +537,7 @@ class ContactTracker:
                 if slot_centroids[si] is not None and slot_masks[si] is not None:
                     det_center = det.center()
                     slot_c = slot_centroids[si]
-                    if _euclidean(det_center, slot_c) < 50.0:
+                    if _euclidean(det_center, slot_c) < self.det_slot_match_radius:
                         if si not in slot_dets:
                             slot_dets[si] = det
 
@@ -564,32 +576,20 @@ class ContactTracker:
                         if slot_centroids[si] is not None and si in slot_dets]
 
         if len(active_slots) < 2:
-            # Single or no detection — record as independent
-            for i in range(len(active_slots)):
-                for j in range(i + 1, min(self.num_slots, len(active_slots) + 1)):
+            # Single or no detection — record all pairs as independent
+            for i in range(self.num_slots):
+                for j in range(i + 1, self.num_slots):
                     ev = ContactEvent(
                         frame_idx=frame_idx,
                         time_sec=round(time_sec, 4),
-                        rat_a_slot=0,
-                        rat_b_slot=1,
+                        rat_a_slot=i,
+                        rat_b_slot=j,
                         rat_a_track_id=None,
                         rat_b_track_id=None,
                         zone=Zone.INDEPENDENT.value,
                         quality_flag="single_detection",
                     )
                     events.append(ev)
-            if not events and self.num_slots >= 2:
-                ev = ContactEvent(
-                    frame_idx=frame_idx,
-                    time_sec=round(time_sec, 4),
-                    rat_a_slot=0,
-                    rat_b_slot=1,
-                    rat_a_track_id=None,
-                    rat_b_track_id=None,
-                    zone=Zone.INDEPENDENT.value,
-                    quality_flag="single_detection",
-                )
-                events.append(ev)
         else:
             for i in range(len(active_slots)):
                 for j in range(i + 1, len(active_slots)):
@@ -631,6 +631,43 @@ class ContactTracker:
 
         return events
 
+    def write_merged_placeholder(
+        self,
+        slot_centroids: List[Optional[Tuple[float, float]]],
+        frame_idx: int,
+    ) -> None:
+        """Write a placeholder row for a MERGED-state frame.
+
+        Maintains frame_idx continuity in CSV and keeps velocity tracking
+        updated, but does NOT classify contacts (identity is ambiguous).
+        """
+        time_sec = frame_idx / self.fps
+        self._total_frames += 1
+
+        # Update previous centroids so velocity is correct on SEPARATE resume
+        for si in range(self.num_slots):
+            self._prev_centroids[si] = slot_centroids[si]
+
+        # Write one placeholder row per pair (N=2 → single pair 0,1)
+        event = ContactEvent(
+            frame_idx=frame_idx,
+            time_sec=round(time_sec, 4),
+            rat_a_slot=0,
+            rat_b_slot=1,
+            rat_a_track_id=None,
+            rat_b_track_id=None,
+            zone=Zone.PROXIMITY.value,
+            contact_type=None,
+            quality_flag="merged_state",
+        )
+
+        self._zone_counts["proximity"] = self._zone_counts.get("proximity", 0) + 1
+        self._quality_counts["merged_state"] += 1
+
+        # Let bout tracker close active bouts after bout_max_gap of no contact
+        self._update_bout(event, frame_idx)
+        self._write_frame_row(event)
+
     def _update_bout(self, event: ContactEvent, frame_idx: int) -> None:
         """Update bout tracking for a contact event."""
         if event.contact_type is None:
@@ -640,7 +677,7 @@ class ContactTracker:
             for key in to_close:
                 bout = self._active_bouts[key]
                 gap = frame_idx - bout.end_frame
-                if gap > self.bout_max_gap:
+                if gap > self.bout_max_gap + 1:
                     self._close_bout(key)
             return
 
@@ -685,7 +722,11 @@ class ContactTracker:
 
     def _close_bout(self, key: str) -> None:
         bout = self._active_bouts.pop(key)
-        if bout.duration_frames >= self.bout_min_dur:
+        min_dur = self.bout_min_dur
+        # FOL requires more consecutive frames to be valid (follow_min_frames)
+        if bout.contact_type == ContactType.FOL.value:
+            min_dur = max(min_dur, self.follow_min_frames)
+        if bout.duration_frames >= min_dur:
             self._bouts.append(bout)
 
     def _accumulate_bout_metrics(self, bout: Bout, event: ContactEvent) -> None:
@@ -829,6 +870,7 @@ class ContactTracker:
             "high_mask_overlap_frames": self._quality_counts.get("high_mask_overlap", 0),
             "missing_keypoints_frames": self._quality_counts.get("missing_keypoints", 0),
             "single_detection_frames": self._quality_counts.get("single_detection", 0),
+            "merged_state_frames": self._quality_counts.get("merged_state", 0),
         }
         flagged = sum(quality_counts.values())
         quality_counts["total_flagged_pct"] = round(flagged / total * 100, 2)
@@ -902,6 +944,7 @@ class ContactTracker:
             "N2N": "#1f77b4",
             "N2AG": "#ff7f0e",
             "N2B": "#2ca02c",
+            "T2T": "#8c564b",
             "SBS": "#9467bd",
             "FOL": "#d62728",
         }
@@ -1000,7 +1043,7 @@ class ContactTracker:
             fig, ax = plt.subplots(figsize=(10, 4))
             ax.axis("off")
             table_data = []
-            headers = ["Pair", "Total (s)", "N2N", "N2AG", "N2B", "SBS", "FOL"]
+            headers = ["Pair", "Total (s)"] + [ct.value for ct in ContactType]
             for pair_key, pair_info in summary.get("per_pair_summary", {}).items():
                 row = [pair_key.replace("pair_", "")]
                 row.append(f"{pair_info['total_contact_sec']:.1f}")

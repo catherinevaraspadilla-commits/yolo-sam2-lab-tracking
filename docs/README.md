@@ -38,8 +38,11 @@
 
 | Document | Description |
 |----------|-------------|
-| [Contact Design](contacts/design.md) | 5 contact types (N2N, N2AG, N2B, SBS, FOL), detection rules |
+| [Contact Design](contacts/design.md) | 6 contact types (N2N, N2AG, N2B, T2T, FOL, SBS) + NC, detection rules |
 | [Output Format](contacts/output_format.md) | CSV columns, bout format, session JSON, PDF report |
+| [System Audit](contacts/audit.md) | Full audit: pipeline integration, bugs, risks, parameter sensitivity |
+| [Threshold Research](contacts/threshold_research.md) | Literature review: minimum bout durations for rat social behavior |
+| [Post-Processing](../docs/contacts_postprocess_simple.md) | 3-rule temporal filtering pipeline (smoothing, gap-bridging, min-bout) |
 
 ## Data
 

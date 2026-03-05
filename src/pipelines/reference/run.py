@@ -196,12 +196,17 @@ def run_pipeline(
                 det.track_id = slot_idx + 1
 
         # Step 6: Contact classification (if enabled)
-        # Skip during MERGED state — identity is ambiguous, contacts unreliable
         contact_events = []
-        if contact_tracker is not None and matcher.state == "SEPARATE":
-            contact_events = contact_tracker.update(
-                slot_dets, slot_masks, slot_centroids, frame_idx,
-            )
+        if contact_tracker is not None:
+            if matcher.state == "SEPARATE":
+                contact_events = contact_tracker.update(
+                    slot_dets, slot_masks, slot_centroids, frame_idx,
+                )
+            else:
+                # MERGED: write placeholder for CSV continuity, skip classification
+                contact_tracker.write_merged_placeholder(
+                    slot_centroids, frame_idx,
+                )
 
         # Step 7: Render overlay
         render_masks = []

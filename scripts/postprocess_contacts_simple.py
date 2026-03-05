@@ -41,23 +41,28 @@ logger = logging.getLogger(__name__)
 
 # ── Constants ──────────────────────────────────────────────────────────────
 
-CONTACT_TYPES = ["N2N", "N2AG", "N2B", "FOL", "SBS"]
+CONTACT_TYPES = ["N2N", "N2AG", "N2B", "T2T", "FOL", "SBS"]
+ALL_EVENT_TYPES = CONTACT_TYPES + ["NC"]
 PRIORITY_ORDER = {ct: i for i, ct in enumerate(CONTACT_TYPES)}
 
 CT_COLORS = {
     "N2N": "#1f77b4",
     "N2AG": "#ff7f0e",
     "N2B": "#2ca02c",
+    "T2T": "#8c564b",
     "FOL": "#d62728",
     "SBS": "#9467bd",
+    "NC": "#cccccc",
 }
 
 TYPE_LABELS = {
     "N2N": "Nose-to-nose",
     "N2AG": "Nose-to-anogenital",
     "N2B": "Nose-to-body",
+    "T2T": "Tail-to-tail",
     "FOL": "Following",
     "SBS": "Side-by-side",
+    "NC": "No contact",
 }
 
 REQUIRED_COLUMNS = {"frame_idx", "time_sec", "zone", "contact_type"}
@@ -383,15 +388,16 @@ def extract_events(
 
             events.append({
                 "event_id": event_id,
-                "contact_type": ct,
-                "start_frame": start_frame,
-                "end_frame": end_frame,
-                "start_time": format_time(start_sec),
-                "end_time": format_time(end_sec),
-                "duration": format_duration(dur_sec),
                 "start_time_sec": round(start_sec, 4),
                 "end_time_sec": round(end_sec, 4),
                 "duration_sec": round(dur_sec, 4),
+                "start_time": format_time(start_sec),
+                "end_time": format_time(end_sec),
+                "duration": format_duration(dur_sec),
+                "contact_type": ct,
+                "contact_label": TYPE_LABELS.get(ct, ct),
+                "start_frame": start_frame,
+                "end_frame": end_frame,
                 "duration_frames": i - start_idx,
                 "investigator_slot": inv_slot if inv_slot is not None else "",
                 "mean_nose_nose_dist_px": _safe_mean(event_slice.get("nose_nose_dist_px", pd.Series())),
@@ -443,19 +449,19 @@ def write_real_per_frame(
     # real_type
     out["real_type"] = real_types
 
-    # real_zone: "contact" if real_type non-empty, else original zone
+    # real_zone: "contact" if real_type is a contact type, else original zone
     out["real_zone"] = out.apply(
-        lambda row: "contact" if row["real_type"] != "" else row["zone"],
+        lambda row: "contact" if row["real_type"] not in ("", "NC") else row["zone"],
         axis=1,
     )
 
-    # real_event_id: assign from contiguous runs
-    event_ids = [""] * len(real_types)
+    # real_event_id: assign from contiguous runs (-1 = no event)
+    event_ids = np.full(len(real_types), -1, dtype=int)
     eid = 0
     i = 0
     n = len(real_types)
     while i < n:
-        if real_types[i] != "":
+        if real_types[i] not in ("", "NC"):
             ct = real_types[i]
             while i < n and real_types[i] == ct:
                 event_ids[i] = eid
@@ -493,7 +499,7 @@ def write_event_log(
     raw_bouts_total = sum(raw_bouts.values())
     real_events_total = len(events_df)
 
-    real_contact_frames = int(np.sum(real_types != ""))
+    real_contact_frames = int(np.sum((real_types != "") & (real_types != "NC")))
     raw_contact_frames = int(np.sum(raw_types != ""))
     real_contact_sec = real_contact_frames / fps
 
@@ -512,20 +518,27 @@ def write_event_log(
     )
     lines.append("")
 
-    # Event table
+    # Contact type legend
+    lines.append("Contact types:")
+    for ct in CONTACT_TYPES:
+        lines.append(f"  {ct:<4} = {TYPE_LABELS[ct]}")
+    lines.append("")
+
+    # Event table (sorted chronologically — first to last contact)
     if len(events_df) > 0:
         # Header
         lines.append(
-            f"{'#':>3}  {'Type':<5}  {'Start':>8} - {'End':<8}  "
-            f"{'Duration':<9}  {'Investigator'}"
+            f"{'#':>3}  {'Start(s)':>9}  {'End(s)':>9}  {'Dur':>6}  "
+            f"{'Type':<5}  {'Contact':<22}  {'Investigator'}"
         )
-        lines.append("-" * 60)
+        lines.append("-" * 80)
 
         for _, row in events_df.iterrows():
             eid = row["event_id"]
             ct = row["contact_type"]
-            start = row["start_time"]
-            end = row["end_time"]
+            label = TYPE_LABELS.get(ct, ct)
+            start_sec = row["start_time_sec"]
+            end_sec = row["end_time_sec"]
             dur = row["duration"]
             inv = row.get("investigator_slot", "")
 
@@ -539,8 +552,8 @@ def write_event_log(
                 inv_str = "--"
 
             lines.append(
-                f"{eid:>3}  {ct:<5}  {start:>8} - {end:<8}  "
-                f"{dur:<9}  {inv_str}"
+                f"{eid:>3}  {start_sec:>9.2f}  {end_sec:>9.2f}  {dur:>6}  "
+                f"{ct:<5}  {label:<22}  {inv_str}"
             )
     else:
         lines.append("  (no contact events detected)")
@@ -548,11 +561,12 @@ def write_event_log(
     # Summary by type
     lines.append("")
     lines.append("--- Summary by type ---")
-    for ct in CONTACT_TYPES:
+    for ct in ALL_EVENT_TYPES:
         ct_events = events_df[events_df["contact_type"] == ct] if len(events_df) > 0 else pd.DataFrame()
         n_events = len(ct_events)
+        label = TYPE_LABELS.get(ct, ct)
         if n_events == 0:
-            lines.append(f"{ct:<4}: {n_events:>2} events")
+            lines.append(f"  {ct:<4} ({label}): {n_events:>2} events")
             continue
 
         total_dur = ct_events["duration_sec"].sum()
@@ -560,7 +574,7 @@ def write_event_log(
         pct = total_dur / total_sec * 100 if total_sec > 0 else 0
 
         line = (
-            f"{ct:<4}: {n_events:>2} events, "
+            f"  {ct:<4} ({label}): {n_events:>2} events, "
             f"{format_duration(total_dur):>6} total ({pct:.1f}%), "
             f"mean {format_duration(mean_dur)}"
         )
@@ -592,6 +606,22 @@ def write_event_log(
         f"({format_duration(raw_sec - real_contact_sec)} removed)"
     )
 
+    # Validation guidelines
+    lines.append("")
+    lines.append("--- Validation guidelines ---")
+    lines.append("  N2N  (Nose-to-nose):       Both noses within contact zone (<0.3 body lengths)")
+    lines.append("  N2AG (Nose-to-anogenital):  Nose near tail base of the other rat")
+    lines.append("  N2B  (Nose-to-body):        Nose near body — most common, check for false positives")
+    lines.append("  T2T  (Tail-to-tail):        Both tail bases close together (rear-to-rear)")
+    lines.append("  FOL  (Following):           Sustained following (speed + alignment + min frames)")
+    lines.append("  SBS  (Side-by-side):        Parallel movement with mask overlap")
+    lines.append("")
+    lines.append("  False positive indicators:")
+    lines.append("    - Events near the minimum duration (0.3s) may be noise")
+    lines.append("    - N2B during proximity zone: may be incidental body proximity")
+    lines.append("    - Merged-state frames are excluded from classification (identity ambiguous)")
+    lines.append("    - High flicker rate in raw data suggests noisy detections")
+
     path = output_dir / "event_log.txt"
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     logger.info("Wrote %s", path)
@@ -618,11 +648,11 @@ def write_real_summary(
     raw_bouts = _count_raw_bouts(raw_types)
     raw_dur_frames = _count_raw_duration_frames(raw_types)
     raw_contact_frames = int(np.sum(raw_types != ""))
-    real_contact_frames = int(np.sum(real_types != ""))
+    real_contact_frames = int(np.sum((real_types != "") & (real_types != "NC")))
 
     # Per-type real summary
     events_by_type = {}
-    for ct in CONTACT_TYPES:
+    for ct in ALL_EVENT_TYPES:
         ct_events = events_df[events_df["contact_type"] == ct] if len(events_df) > 0 else pd.DataFrame()
         n = len(ct_events)
         total_dur = float(ct_events["duration_sec"].sum()) if n > 0 else 0.0
@@ -725,11 +755,11 @@ def generate_reports(
     fig, axes = plt.subplots(2, 1, figsize=(14, 4), sharex=True)
     fig.suptitle("Contact Timeline: Raw vs Cleaned", fontsize=13)
 
-    for ax, types_arr, label in [
-        (axes[0], raw_types, "Raw contacts"),
-        (axes[1], real_types, "Real contacts (cleaned)"),
+    for ax, types_arr, label, type_list in [
+        (axes[0], raw_types, "Raw contacts", CONTACT_TYPES),
+        (axes[1], real_types, "Real contacts (cleaned)", ALL_EVENT_TYPES),
     ]:
-        for ct in CONTACT_TYPES:
+        for ct in type_list:
             # Find runs of this type
             in_run = False
             run_start = 0
@@ -756,10 +786,10 @@ def generate_reports(
 
     legend_patches = [
         mpatches.Patch(color=CT_COLORS[ct], label=f"{ct} ({TYPE_LABELS[ct]})")
-        for ct in CONTACT_TYPES
+        for ct in ALL_EVENT_TYPES
     ]
     axes[1].legend(handles=legend_patches, loc="upper center",
-                   bbox_to_anchor=(0.5, -0.4), ncol=5, fontsize=8)
+                   bbox_to_anchor=(0.5, -0.4), ncol=4, fontsize=8)
     axes[1].set_xlabel("Time")
 
     fig.tight_layout()
@@ -785,7 +815,7 @@ def generate_reports(
     ax.bar_label(bars1, fmt="%.1f", fontsize=8, padding=2)
     ax.bar_label(bars2, fmt="%.1f", fontsize=8, padding=2)
     ax.set_xticks(x)
-    ax.set_xticklabels(CONTACT_TYPES)
+    ax.set_xticklabels([f"{ct}\n{TYPE_LABELS[ct]}" for ct in CONTACT_TYPES], fontsize=8)
     ax.set_ylabel("Total duration (seconds)")
     ax.set_title("Total Contact Duration by Type")
     ax.legend()
@@ -810,7 +840,7 @@ def generate_reports(
     ax.bar_label(bars1, fontsize=9, padding=2)
     ax.bar_label(bars2, fontsize=9, padding=2)
     ax.set_xticks(x)
-    ax.set_xticklabels(CONTACT_TYPES)
+    ax.set_xticklabels([f"{ct}\n{TYPE_LABELS[ct]}" for ct in CONTACT_TYPES], fontsize=8)
     ax.set_ylabel("Number of events")
     ax.set_title("Event Count by Type: Raw vs Cleaned")
     ax.legend()
@@ -820,11 +850,14 @@ def generate_reports(
     logger.info("Wrote events_by_type.png")
 
     # ── Chart 4: Event duration distribution ──
-    fig, axes = plt.subplots(2, 3, figsize=(12, 7))
+    n_types = len(ALL_EVENT_TYPES)
+    n_cols = 3
+    n_rows = math.ceil((n_types + 1) / n_cols)  # +1 for "All types"
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(12, 4 * n_rows))
     fig.suptitle("Real Event Duration Distribution", fontsize=13)
 
-    for idx, ct in enumerate(CONTACT_TYPES):
-        row, col = divmod(idx, 3)
+    for idx, ct in enumerate(ALL_EVENT_TYPES):
+        row, col = divmod(idx, n_cols)
         ax = axes[row][col]
         ct_ev = events_df[events_df["contact_type"] == ct] if len(events_df) > 0 else pd.DataFrame()
         durations = ct_ev["duration_sec"].values if len(ct_ev) > 0 else []
@@ -832,12 +865,13 @@ def generate_reports(
         if len(durations) > 0:
             n_bins = min(20, max(5, len(durations)))
             ax.hist(durations, bins=n_bins, color=CT_COLORS[ct], edgecolor="black", alpha=0.8)
-        ax.set_title(f"{ct} ({len(durations)} events)", fontsize=10)
+        ax.set_title(f"{ct} - {TYPE_LABELS[ct]} ({len(durations)} events)", fontsize=10)
         ax.set_xlabel("Duration (s)", fontsize=8)
         ax.set_ylabel("Count", fontsize=8)
 
-    # "All types" in bottom-right
-    ax = axes[1][2]
+    # "All types" in next available cell
+    all_row, all_col = divmod(n_types, n_cols)
+    ax = axes[all_row][all_col]
     all_durations = events_df["duration_sec"].values if len(events_df) > 0 else []
     if len(all_durations) > 0:
         n_bins = min(20, max(5, len(all_durations)))
@@ -846,6 +880,11 @@ def generate_reports(
     ax.set_xlabel("Duration (s)", fontsize=8)
     ax.set_ylabel("Count", fontsize=8)
 
+    # Hide unused subplots
+    for idx in range(n_types + 1, n_rows * n_cols):
+        row, col = divmod(idx, n_cols)
+        axes[row][col].set_visible(False)
+
     fig.tight_layout()
     fig.savefig(reports_dir / "event_duration_distribution.png", dpi=150)
     plt.close(fig)
@@ -853,7 +892,7 @@ def generate_reports(
 
     # ── Table: comparison_by_type.csv ──
     rows = []
-    for ct in CONTACT_TYPES:
+    for ct in ALL_EVENT_TYPES:
         ct_ev = events_df[events_df["contact_type"] == ct] if len(events_df) > 0 else pd.DataFrame()
         n_real = len(ct_ev)
         n_raw = raw_bouts.get(ct, 0)
@@ -863,6 +902,7 @@ def generate_reports(
 
         rows.append({
             "contact_type": ct,
+            "contact_label": TYPE_LABELS.get(ct, ct),
             "raw_bouts": n_raw,
             "real_events": n_real,
             "removed": n_raw - n_real,
@@ -881,7 +921,7 @@ def generate_reports(
 
     # ── Table: comparison_global.csv ──
     raw_contact_frames = int(np.sum(raw_types != ""))
-    real_contact_frames = int(np.sum(real_types != ""))
+    real_contact_frames = int(np.sum((real_types != "") & (real_types != "NC")))
 
     # Flicker rate: type transitions per 1000 frames
     def _flicker_rate(arr):
@@ -889,10 +929,6 @@ def generate_reports(
             return 0.0
         transitions = sum(1 for k in range(1, len(arr)) if arr[k] != arr[k - 1])
         return round(transitions / len(arr) * 1000, 1)
-
-    config_window = 5  # will be filled from actual config in main
-    config_gap = 3
-    config_min = 0.3
 
     global_data = {
         "metric": [
@@ -974,7 +1010,7 @@ def run_postprocess(
     types = apply_majority_vote(types, smooth_window)
     types = apply_gap_bridging(types, gap_max)
     types = apply_min_bout_filter(types, min_bout_frames)
-    real_types = types
+    real_types = np.where(types == "", "NC", types)
 
     events_df = extract_events(df, real_types, fps)
 
@@ -1097,7 +1133,7 @@ def main():
     )
     types = apply_min_bout_filter(types, min_bout_frames)
 
-    real_types = types
+    real_types = np.where(types == "", "NC", types)
 
     # Extract events
     events_df = extract_events(df, real_types, fps)
