@@ -16,19 +16,15 @@
 # Splits a video into N chunks and processes each on a separate GPU.
 # Each array task computes its frame range from SLURM_ARRAY_TASK_ID.
 #
-# Usage (sam2_yolo — default):
-#   sbatch --array=0-3 slurm/run_chunks.sbatch
-#
-# Usage (reference pipeline):
-#   PIPELINE=src.pipelines.reference.run CONFIG=configs/hpc_reference.yaml \
-#     sbatch --array=0-3 slurm/run_chunks.sbatch
+# Usage (3 GPUs):
+#   sbatch --array=0-2 slurm/run_chunks.sbatch
 #
 # With overrides:
 #   OVERRIDES="video_path=data/raw/original_120s.avi contacts.enabled=true" \
-#     sbatch --array=0-3 slurm/run_chunks.sbatch
+#     sbatch --array=0-2 slurm/run_chunks.sbatch
 #
 # Limit concurrent GPU jobs (e.g., max 2 at a time):
-#   sbatch --array=0-3%2 slurm/run_chunks.sbatch
+#   sbatch --array=0-2%2 slurm/run_chunks.sbatch
 #
 # After all chunks finish, merge results:
 #   python scripts/merge_chunks.py outputs/runs/*_chunk*/
@@ -38,9 +34,8 @@
 set -euo pipefail
 
 # --- Configuration ---
-CONFIG="${CONFIG:-configs/hpc_full.yaml}"
-PIPELINE="${PIPELINE:-src.pipelines.sam2_yolo.run}"  # Pipeline module to run
-                                          # Override: PIPELINE=src.pipelines.reference.run
+CONFIG="${CONFIG:-configs/hpc_centroid.yaml}"
+PIPELINE="${PIPELINE:-src.pipelines.centroid.run}"
 TOTAL_FRAMES="${TOTAL_FRAMES:-30000}"    # Total frames in the video
                                           # 20 min @ 25fps = 30000
                                           # Override: --export=...,TOTAL_FRAMES=15000

@@ -1,20 +1,19 @@
 #!/bin/bash
 # ============================================================================
-# Run reference pipeline in parallel chunks within a salloc session
+# Run centroid pipeline in parallel chunks within a salloc session
 # ============================================================================
 #
 # Usage (inside salloc with multiple GPUs):
 #   bash scripts/run_parallel.sh data/raw/original_120s.avi
-#   bash scripts/run_parallel.sh data/raw/original_120s.avi 4
-#   bash scripts/run_parallel.sh data/raw/my_video.avi 2 configs/hpc_reference.yaml
-#   bash scripts/run_parallel.sh data/raw/my_video.avi 4 configs/hpc_centroid.yaml "" centroid
+#   bash scripts/run_parallel.sh data/raw/original_120s.avi 3
+#   bash scripts/run_parallel.sh data/raw/my_video.avi 3 configs/hpc_centroid.yaml
+#   bash scripts/run_parallel.sh data/raw/my_video.avi 3 configs/hpc_centroid.yaml "detection.confidence=0.3"
 #
 # Arguments:
 #   $1 - Video path (required)
-#   $2 - Number of chunks/GPUs (default: 4)
-#   $3 - Config file (default: configs/hpc_reference.yaml)
+#   $2 - Number of chunks/GPUs (default: 3)
+#   $3 - Config file (default: configs/hpc_centroid.yaml)
 #   $4 - Extra overrides (optional, space-separated key=value)
-#   $5 - Pipeline name: "reference" (default) or "centroid"
 #
 # Output structure:
 #   outputs/runs/<BATCH_ID>/
@@ -37,20 +36,11 @@
 set -euo pipefail
 
 VIDEO="${1:?Usage: bash scripts/run_parallel.sh <video_path> [num_chunks] [config] [overrides]}"
-NUM_CHUNKS="${2:-4}"
-CONFIG="${3:-configs/hpc_reference.yaml}"
+NUM_CHUNKS="${2:-3}"
+CONFIG="${3:-configs/hpc_centroid.yaml}"
 EXTRA_OVERRIDES="${4:-}"
-PIPELINE="${5:-reference}"
-
-# Validate pipeline name
-case "$PIPELINE" in
-    reference) PIPELINE_MODULE="src.pipelines.reference.run" ;;
-    centroid)  PIPELINE_MODULE="src.pipelines.centroid.run" ;;
-    *)
-        echo "ERROR: Unknown pipeline '$PIPELINE'. Use 'reference' or 'centroid'."
-        exit 1
-        ;;
-esac
+PIPELINE="centroid"
+PIPELINE_MODULE="src.pipelines.centroid.run"
 
 # --- Step 0: Validate GPU count ---
 # Count only "GPU N:" lines, not MIG sub-device lines
