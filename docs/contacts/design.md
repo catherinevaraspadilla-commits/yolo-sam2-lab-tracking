@@ -364,12 +364,12 @@ contacts:
 
   # Side-by-side detection
   sbs_mask_iou_min: 0.02       # minimum mask overlap for SBS
-  sbs_max_velocity_px: 5.0     # max centroid displacement per frame (px)
+  sbs_max_velocity_bl: 0.04    # max centroid displacement per frame (in BL)
   sbs_parallel_cos_min: 0.7    # min |cos(angle)| between body orientations
 
   # Following detection
   follow_radius_bl: 0.5        # nose-to-tail_base distance (in BL)
-  follow_min_speed_px: 3.0     # min centroid displacement per frame (px)
+  follow_min_speed_bl: 0.025   # min centroid displacement per frame (in BL)
   follow_alignment_cos: 0.7    # min cos(angle) between velocity vectors
   follow_min_frames: 30        # min frames to count as following (~1.0s at 30fps)
 

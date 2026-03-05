@@ -71,5 +71,5 @@ roboflow/frames/
 4. Mix ~30-40% interaction frames with ~60-70% normal/separated frames
 5. Export dataset from Roboflow in YOLOv8 format
 6. Retrain YOLO26 on augmented dataset
-7. Replace `models/yolo/modelyolo26.pt` with new weights
+7. Replace `models/yolo/best.pt` with new weights
 8. Re-run centroid pipeline → fewer "carried" frames during interactions

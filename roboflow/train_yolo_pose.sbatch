@@ -70,7 +70,7 @@ echo "============================================"
 #   A100 80GB  -> batch 32-64
 #   V100 32GB  -> batch 8-16
 
-python train_yolo_pose.py \
+python roboflow/train_yolo_pose.py \
     --epochs 100 \
     --batch 16 \
     --imgsz 640 \

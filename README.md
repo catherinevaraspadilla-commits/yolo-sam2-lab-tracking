@@ -51,7 +51,7 @@ yolo-sam2-lab-tracking/
     raw/                             # Full videos (gitignored)
     clips/                           # Short test clips
   models/
-    yolo/                            # YOLO26 weights (modelyolo26.pt)
+    yolo/                            # YOLO weights (best.pt)
     sam2/                            # SAM2 checkpoints
     sam3/                            # SAM3 checkpoint (sam3.pt)
   src/

@@ -54,7 +54,7 @@ If you want to disconnect and let it run:
 # On Bunya (after SSH, no salloc needed)
 cd ~/Balbi/yolo-sam2-lab-tracking
 mkdir -p outputs/slurm
-sbatch train_yolo_pose.sbatch
+sbatch roboflow/train_yolo_pose.sbatch
 
 # Monitor from anywhere
 squeue -u $USER

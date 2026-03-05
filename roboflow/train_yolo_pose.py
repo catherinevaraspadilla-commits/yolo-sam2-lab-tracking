@@ -195,7 +195,7 @@ def train(args):
         batch=args.batch,
         workers=args.workers,
         patience=args.patience,
-        device="auto",             # uses GPU if available, else CPU
+        device=0,                  # use GPU 0 (use "cpu" if no GPU)
         project=PROJECT_DIR,
         name=RUN_NAME,
         exist_ok=True,
@@ -210,21 +210,28 @@ def train(args):
     # -----------------------------------------------------------------------
     # 5. RESULTS
     # -----------------------------------------------------------------------
-    best_weights = os.path.join(PROJECT_DIR, RUN_NAME, "weights", "best.pt")
+    # Use the trainer's actual save directory (avoids path nesting issues)
+    save_dir = str(results.save_dir) if hasattr(results, 'save_dir') else str(model.trainer.save_dir)
+    best_weights = os.path.join(save_dir, "weights", "best.pt")
+
     print("\n" + "=" * 60)
     print("  TRAINING COMPLETE")
     print(f"  Best weights: {best_weights}")
-    print(f"  Results dir:  {os.path.join(PROJECT_DIR, RUN_NAME)}")
+    print(f"  Results dir:  {save_dir}")
     print("=" * 60)
 
     # -----------------------------------------------------------------------
     # 6. VALIDATE with best weights
     # -----------------------------------------------------------------------
-    print("\nRunning validation with best weights...")
-    best_model = YOLO(best_weights)
-    metrics = best_model.val(data=data_yaml)
-    print(f"  mAP50:    {metrics.box.map50:.4f}")
-    print(f"  mAP50-95: {metrics.box.map:.4f}")
+    if os.path.isfile(best_weights):
+        print("\nRunning validation with best weights...")
+        best_model = YOLO(best_weights)
+        metrics = best_model.val(data=data_yaml)
+        print(f"  mAP50:    {metrics.box.map50:.4f}")
+        print(f"  mAP50-95: {metrics.box.map:.4f}")
+    else:
+        print(f"\nWARNING: best.pt not found at {best_weights}")
+        print("Training validation was already done above. Check the results directory.")
 
     return best_weights
 

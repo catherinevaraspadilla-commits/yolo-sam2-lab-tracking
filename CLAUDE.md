@@ -35,7 +35,7 @@ All pipelines use 7 keypoints: tail_tip, tail_base, tail_start, mid_body, nose, 
 | Contact tracker | `src/common/contacts.py` |
 | Shared geometry | `src/common/geometry.py` |
 | Shared metrics | `src/common/metrics.py` |
-| YOLO26 weights | `models/yolo/modelyolo26.pt` |
+| YOLO weights | `models/yolo/best.pt` |
 | Reference configs | `configs/local_reference.yaml`, `configs/hpc_reference.yaml` |
 | Centroid configs | `configs/local_centroid.yaml`, `configs/hpc_centroid.yaml` |
 | SAM3 configs | `configs/local_sam3.yaml`, `configs/hpc_sam3.yaml` |

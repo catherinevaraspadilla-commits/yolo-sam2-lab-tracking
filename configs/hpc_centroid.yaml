@@ -19,7 +19,7 @@ output_dir: outputs/runs
 
 # --- Models ---
 models:
-  yolo_path: models/yolo/modelyolo26.pt
+  yolo_path: models/yolo/best.pt
 
   # SAM2 large — best quality, use on HPC GPU nodes
   sam2_checkpoint: models/sam2/segment-anything-2/checkpoints/sam2.1_hiera_large.pt

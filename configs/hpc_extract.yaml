@@ -19,7 +19,7 @@ output_dir: outputs/runs
 
 # --- Models ---
 models:
-  yolo_path: models/yolo/modelyolo26.pt
+  yolo_path: models/yolo/best.pt
   sam2_checkpoint: models/sam2/segment-anything-2/checkpoints/sam2.1_hiera_large.pt
   sam2_config: configs/sam2.1/sam2.1_hiera_l.yaml
   device: cuda

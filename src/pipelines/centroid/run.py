@@ -44,9 +44,9 @@ from src.common.geometry import euclidean_distance
 from src.common.visualization import (
     apply_masks_overlay, draw_centroids, draw_keypoints, draw_text,
 )
-from src.pipelines.reference.identity_matcher import resolve_overlaps
-from src.pipelines.sam2_yolo.infer_yolo import detect_only
-from src.pipelines.sam2_yolo.models_io import load_models
+from src.common.geometry import resolve_overlaps
+from src.common.yolo_inference import detect_only
+from src.common.model_loaders import load_models
 
 logger = logging.getLogger(__name__)
 
@@ -99,7 +99,7 @@ def _segment_from_centroids(predictor, frame_rgb, centroids, sam_threshold):
 
 def _assign_keypoints_to_masks(
     detections, masks, centroids,
-) -> List[Optional[object]]:
+) -> List[Optional["Detection"]]:
     """Assign YOLO detections to SAM2 masks by spatial overlap.
 
     For each detection, check if its bounding box center falls inside
@@ -109,7 +109,7 @@ def _assign_keypoints_to_masks(
     Returns slot-aligned list (length = len(masks)).
     """
     n_slots = len(masks)
-    slot_dets: List[Optional[object]] = [None] * n_slots
+    slot_dets: List[Optional["Detection"]] = [None] * n_slots
     used_dets = set()
 
     # First pass: assign by mask containment
@@ -283,7 +283,7 @@ def run_pipeline(
 
     # Centroid propagation state
     prev_centroids: Optional[List[Tuple[float, float]]] = None
-    prev_slot_dets: Optional[List[Optional[object]]] = None
+    prev_slot_dets: Optional[List[Optional["Detection"]]] = None
     initialized = False
     yolo_uses = 0
 
@@ -301,7 +301,7 @@ def run_pipeline(
 
         slot_masks: List[Optional[np.ndarray]] = [None] * max_animals
         slot_centroids: List[Optional[Tuple[float, float]]] = [None] * max_animals
-        slot_dets: List[Optional[object]] = [None] * max_animals
+        slot_dets: List[Optional["Detection"]] = [None] * max_animals
         mode = "none"
         has_carry_over = False
         identity_ambiguous = False

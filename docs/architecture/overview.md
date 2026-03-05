@@ -26,7 +26,7 @@ detections, masks, tracks, social contact classifications, and summary reports.
 ### YOLO26 (Ultralytics)
 - **Role:** Fast pose detection — bounding boxes + 7 keypoints per rat
 - **Architecture:** NMS-free (end-to-end), dual detection head, C2PSA attention
-- **Weights:** `models/yolo/modelyolo26.pt` (trained on custom rat dataset)
+- **Weights:** `models/yolo/best.pt` (trained on custom rat dataset)
 - **Previous:** YOLOv8l-pose (archived as `yolov8lrata.pt`)
 - See [YOLO26 Migration](../models/yolo26_migration.md) for upgrade details
 

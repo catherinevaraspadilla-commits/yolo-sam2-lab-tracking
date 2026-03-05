@@ -1,4 +1,4 @@
-# Social Contact System — Full Audit (2026-03-05)
+# Social Contact System — Full Audit (updated 2026-03-05)
 
 Comprehensive review of classification logic, pipeline integration, post-processing,
 configuration, failure points, and risks.
@@ -96,7 +96,7 @@ Higher-priority types suppress lower-priority ones (first match wins).
 |---|---|
 | **Behavior** | One rat moves behind the other at close range in same direction. |
 | **Conditions (all must hold)** | 1. `dist(nose_A, tail_base_B) < follow_radius` (0.5 BL) |
-| | 2. Both speeds > `follow_min_speed_px` (3.0 px/frame) |
+| | 2. Both speeds > `follow_min_speed_bl` (0.025 BL/frame) |
 | | 3. `cos(vel_vec_A, vel_vec_B) > follow_alignment_cos` (0.7) |
 | **Keypoints** | nose (4), tail_base (1), centroids across frames |
 | **Asymmetric** | Yes — investigator = follower (nose owner) |
@@ -108,7 +108,7 @@ Higher-priority types suppress lower-priority ones (first match wins).
 |---|---|
 | **Behavior** | Bodies parallel, in contact, low velocity. Affiliative resting / huddling. |
 | **Conditions (all must hold)** | 1. `mask_iou(A, B) > sbs_mask_iou_min` (0.02) |
-| | 2. Both velocities < `sbs_max_velocity_px` (5.0) or unknown |
+| | 2. Both velocities < `sbs_max_velocity_bl` (0.04 BL/frame) or unknown |
 | | 3. `|cos(orient_A, orient_B)| > sbs_parallel_cos_min` (0.7) |
 | **Requires** | SAM2 masks for both rats (IoU = 0 without masks → SBS impossible) |
 | **Symmetric** | Yes — no investigator assigned |
@@ -154,7 +154,7 @@ be close while centroids are far (unusual but possible with elongated body postu
 
 | Data | Source | Format |
 |------|--------|--------|
-| `slot_dets` | YOLO detections matched to slots by centroid proximity | List[Detection] with .keypoints, .track_id |
+| `slot_dets` | YOLO detections matched to slots by track_id (fallback: centroid proximity) | List[Detection] with .keypoints, .track_id |
 | `slot_masks` | SAM2/SAM3 segmentation | List[Optional[ndarray]] — boolean (H, W) |
 | `slot_centroids` | Mask centroid or bbox center | List[Optional[Tuple[float, float]]] |
 | `frame_idx` | Pipeline frame counter | int (0-based) |
@@ -166,7 +166,7 @@ be close while centroids are far (unusual but possible with elongated body postu
 | **Segmentation** | SAM2 ImagePredictor | SAM2 centroid propagation | SAM3 Sam3Processor |
 | **Identity** | IdentityMatcher (Hungarian) | SAM2 propagation (inherent) | IdentityMatcher (Hungarian) |
 | **Keypoint assignment** | `match_dets_to_slots()` proximity | Mask overlap + proximity + carry-over | `match_dets_to_slots()` proximity |
-| **MERGED handling** | `write_merged_placeholder()` | N/A (no MERGED state) | `write_merged_placeholder()` |
+| **MERGED handling** | `write_merged_placeholder()` | Lightweight merge detection (mask IoU > 0.5 → `write_merged_placeholder()`) | `write_merged_placeholder()` |
 | **Coords** | All pixel-space | All pixel-space | SAM3 normalizes [0,1] internally, outputs pixel masks |
 
 ### 3.3 Reference pipeline (SEPARATE vs MERGED)
@@ -184,20 +184,43 @@ else:  # MERGED
 - Velocity tracking updated (centroids still available)
 - Active bouts may close if gap exceeds `bout_max_gap_frames`
 
-### 3.4 Centroid pipeline — keypoint carry-over
+### 3.4 Centroid pipeline — keypoint carry-over + overlap resolution + merge detection
 
 When YOLO misses a detection, the centroid pipeline carries forward the previous
 frame's detection shifted by centroid delta:
 
 ```python
 carried.x1 += dx; carried.y1 += dy; carried.x2 += dx; carried.y2 += dy
+carried.is_carried_over = True  # quality flag for ContactTracker
 for kp in carried.keypoints:
     kp.x += dx; kp.y += dy
 ```
 
-**Risk:** Stale keypoints don't reflect current pose. If the rat turns during
-a missed detection, carried keypoints will be in the wrong position. No quality
-flag is set for carried detections.
+**Stale keypoints (FIXED):** Carried-over detections are now tagged with
+`is_carried_over=True`. `classify_pair_contacts()` checks this and sets
+`quality_flag="stale_keypoints"` on the contact event.
+
+**Mask overlap resolution (FIXED):** `resolve_overlaps()` imported from
+`identity_matcher.py` is called after computing centroids. Contested pixels
+(where both masks are True) are assigned to the nearest centroid. Prevents
+inflated mask IoU → false SBS.
+
+**Lightweight merge detection (FIXED):** After overlap resolution, pairwise mask
+IoU is checked. If IoU > `mask_overlap_warning` (0.5), `write_merged_placeholder()`
+is called instead of `update()` — no contact classification when identity is ambiguous.
+
+```python
+# Step 4b in centroid pipeline
+for i, j in active_mask_pairs:
+    if compute_mask_iou(slot_masks[i], slot_masks[j]) > merge_iou_thr:
+        identity_ambiguous = True
+        break
+# Step 5
+if identity_ambiguous:
+    contact_tracker.write_merged_placeholder(slot_centroids, frame_idx)
+else:
+    contact_events = contact_tracker.update(...)
+```
 
 ### 3.5 Post-processing trigger
 
@@ -392,7 +415,7 @@ remain correct).
 | `follow_min_frames` | 30 | frames | HIGH | 1.0s at 30fps — enforced in `_close_bout()` |
 | `bout_max_gap_frames` | 3 | frames | MEDIUM | Temporal continuity |
 | `bout_min_duration_frames` | 9 | frames | HIGH | 300ms at 30fps — min meaningful contact |
-| `mask_overlap_warning` | 0.5 | ratio | LOW | Quality flag only |
+| `mask_overlap_warning` | 0.5 | ratio | MEDIUM | Quality flag + centroid merge detection threshold |
 | `det_slot_match_radius` | 200.0 | pixels | **CRITICAL** | Det-to-slot matching |
 
 ### 7.2 Post-processing parameters (contacts_postprocess_simple.yaml)
@@ -515,16 +538,116 @@ NC is never present during filtering — it's a post-hoc label for the output.
 16. **Orphaned bout_ids in raw per-frame CSV** — ContactTracker assigns bout_ids during active bouts. When `_close_bout()` filters a short bout, those frames retain stale bout_ids. Post-processing addresses this via `real_event_id` in the cleaned CSV. Not fixed in ContactTracker to avoid complexity.
 17. **Bout splitting at chunk boundaries** — bouts spanning chunk boundaries are split into two sub-bouts. If either sub-bout fails the minimum duration filter, that portion is lost. Mitigated by `_renumber_bout_ids()` but not fully resolved.
 
-### Remaining improvements
+### Centroid pipeline fixes — ALL DONE (2026-03-05)
 
-18. **Add quality flag for carried keypoints** in centroid pipeline
-19. **Normalize pixel-based thresholds** by body length or frame width
-20. **Make `_bl_alpha` configurable** for different convergence needs
-21. **Add explicit warning** when SBS is disabled due to missing masks
-22. **Centroid pipeline MERGED state** — no IdentityMatcher means contacts classified during unreliable mask states
+18. ~~**ContactTracker re-matching detections (CRITICAL)**~~ — FIXED: `ContactTracker.update()` now respects `track_id` (set by pipelines as `slot_idx + 1`) for slot mapping. Previously re-matched by proximity with first-match-wins, causing slot 0 to always win during close contact → wrong keypoints on wrong rat → incorrect investigator roles. Proximity fallback retained only for detections without `track_id`.
+19. ~~**Add `resolve_overlaps()` to centroid pipeline**~~ — FIXED: imported from `identity_matcher.py`, called after computing centroids from masks. Contested pixels assigned to nearest centroid. Prevents inflated mask IoU → false SBS contacts.
+20. ~~**Add quality flag for carried keypoints**~~ — FIXED: `_carry_over_keypoints()` sets `is_carried_over=True` on deep-copied detections. `classify_pair_contacts()` detects this via `getattr()` and sets `quality_flag="stale_keypoints"`. Counted in `_quality_counts` and reported in session summary JSON.
+21. ~~**Add lightweight merge detector for centroid pipeline**~~ — FIXED: checks pairwise mask IoU after overlap resolution. If IoU > `mask_overlap_warning` (0.5), uses `write_merged_placeholder()` instead of `update()`. Prevents contact classification during identity-ambiguous periods. Status bar shows `[AMBIGUOUS]`.
+22. ~~**Dead carry-over detection code**~~ — FIXED: removed first `has_carry_over` check that used `is` comparison on deep-copied objects (always `False`). Kept only the working `id()`-based check.
+23. ~~**Normalize pixel-based thresholds**~~ — FIXED: `sbs_max_velocity_bl: 0.04` and `follow_min_speed_bl: 0.025` now use body-length units. Converted at runtime: `threshold_px = threshold_bl × body_length`. Backward-compatible: old `_px` keys still work as fallback. All 10 config files updated.
+
+### Additional bugs found (re-audit 2026-03-05)
+
+24. ~~**Velocity EMA not updated during MERGED state (HIGH)**~~ — FIXED: `write_merged_placeholder()` only updated `_prev_centroids` but never updated `_vel_ema` or `_vel_vec_ema`. On MERGED → SEPARATE transition, velocity EMA jumped to the centroid delta accumulated across the entire MERGED period → false FOL triggers or missed SBS. Now computes velocity EMA in `write_merged_placeholder()` identically to `update()`.
+25. ~~**Type hint `List[Optional[object]]` in centroid pipeline (LOW)**~~ — FIXED: changed to `List[Optional["Detection"]]` for clarity. No runtime impact.
+
+### Remaining improvements — SKIPPED (not needed)
+
+26. ~~**Make `_bl_alpha` configurable**~~ — SKIPPED: alpha=0.1 is a stable internal constant, not a behavioral parameter. No practical scenario requires tuning it.
+27. ~~**Add explicit warning when SBS disabled**~~ — SKIPPED: if SAM2/SAM3 fails to produce masks, the pipeline has much bigger visible problems (no overlay, no identity). An SBS-only silent failure is unrealistic.
 
 ### Future considerations
 
-23. **MERGED state contact inference** — use pre-merge contact type to infer during MERGED
-24. **N>2 support** — fix single-detection placeholder for multi-animal experiments
-25. **Body length validation** — warn if estimated BL differs significantly from fallback
+28. **MERGED state contact inference** — use pre-merge contact type to infer during MERGED
+29. **N>2 support** — fix single-detection placeholder for multi-animal experiments
+30. **Body length validation** — warn if estimated BL differs significantly from fallback
+
+---
+
+## 11. Research Findings (2025-2026 literature, 2026-03-05)
+
+### 11.1 Actionable improvements (ranked by effort-to-impact)
+
+#### 1. Keypoint validity filtering via SAM2 masks (TRIVIAL effort)
+
+**Source:** ADPT (eLife, March 2025)
+
+YOLO keypoints that fall **outside their rat's SAM2 mask** are likely errant detections.
+Adding a point-in-mask check before contact classification would reject bad keypoints
+at the source — more principled than relying on EMA smoothing alone.
+
+```python
+# Proposed check in _assign_keypoints_to_masks() or contacts.py
+if mask is not None:
+    for kp in det.keypoints:
+        ny, nx = round(kp.y), round(kp.x)
+        if not (0 <= ny < mask.shape[0] and 0 <= nx < mask.shape[1] and mask[ny, nx]):
+            kp.conf = 0.0  # suppress errant keypoint
+```
+
+**Impact:** Reduces false contacts from errant keypoints, especially during occlusion.
+
+#### 2. Mask intersection region for contact classification (MODERATE effort)
+
+**Source:** s-DANNCE (Cell, 2025) — 3D mesh-based social touch detection
+
+Instead of pure keypoint-to-keypoint distances, use the **overlap region of two SAM2 masks**
+to determine where on each body the contact occurs:
+1. Compute mask intersection pixels
+2. Find which keypoints of each rat are closest to the intersection
+3. Use keypoint identity (nose, tail_base, mid_body) to classify contact type
+
+This is more robust than point distances because it uses visible physical overlap.
+Our `resolve_overlaps()` already computes the overlap — we just need to use it
+for classification instead of only for pixel assignment.
+
+**Impact:** More robust contact type classification, especially for N2B and SBS.
+
+#### 3. HMM-based bout detection (MODERATE effort)
+
+**Source:** Infinite hidden semi-Markov model (Nature Neuroscience, Late 2025),
+Keypoint-MoSeq (Nature Methods, 2024), Sticky Poisson HMM (2025)
+
+Replace gap-bridging + min-bout with a 2-3 state HMM per contact type:
+- States: `CONTACT`, `GAP`, `NO_CONTACT`
+- Sticky HMM variant prevents over-segmentation (like our gap bridging but probabilistic)
+- `hmmlearn` or `ssm` Python libraries, minimal code
+
+**Impact:** Better bout boundary detection, handles ambiguous transitions naturally.
+
+#### 4. DAM4SAM — distractor-aware memory for SAM2 (MODERATE effort)
+
+**Source:** DAM4SAM (CVPR 2025) — plug-in module, no SAM2 retraining
+
+Maintains **reference frames** of well-separated rats. When masks overlap (MERGED state),
+uses these reference frames as additional SAM2 memory to distinguish the two animals.
+Sets new state-of-the-art on 6 benchmarks.
+
+For our pipeline: store 3-5 "clean separation" frames, use during merge detection
+and split resolution. Would help `_resolve_split()` in `identity_matcher.py`.
+
+**Impact:** Fewer identity swaps during close interactions.
+
+#### 5. Bidirectional SAM2 for identity swap detection (HIGH effort)
+
+**Source:** Bidirectional VOS (bioRxiv, September 2025)
+
+Run SAM2 forward + backward on the same clip. Per-frame IoU between forward and
+backward masks drops at identity swap points. Flag these frames for re-resolution.
+
+**Impact:** Catches identity swaps that current state machine misses.
+
+### 11.2 New tools/methods (for reference only)
+
+| Tool | Year | Key concept | Relevance |
+|------|------|-------------|-----------|
+| ViT-RSI | 2025 | Vision transformer for social interaction classification | Alternative paradigm, ensemble validator |
+| InteBOMB | 2025 | Dual long/short-term memory for tracking | Memory concept for IdentityMatcher |
+| STCS | 2024 | Optical flow alongside segmentation | Denser motion for FOL/SBS |
+| Seg2Track-SAM2 | 2025 | Sliding-window SAM2 memory (75% less VRAM) | Long video processing |
+| DIPLOMAT | 2025 | Skeleton constraints, 75% fewer ID swaps | Skeleton integrity check |
+| New idtracker.ai | 2025 | Contrastive learning for identity | Visual identity embeddings |
+| vmTracking | 2025 | Virtual markers for occlusion handling | Multi-animal identity |
+| PPAP | CVPR 2025 | Probabilistic prompts for pose estimation | Uncertainty in SAM2 prompts |
+| SuperAnimal | 2024 | Confidence-based keypoint filtering | Already partial (min_conf=0.3) |

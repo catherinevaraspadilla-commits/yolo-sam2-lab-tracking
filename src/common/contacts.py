@@ -712,13 +712,33 @@ class ContactTracker:
     ) -> None:
         """Write a placeholder row for a MERGED-state frame.
 
-        Maintains frame_idx continuity in CSV and keeps velocity tracking
-        updated, but does NOT classify contacts (identity is ambiguous).
+        Maintains frame_idx continuity in CSV and keeps velocity + body length
+        EMA updated, but does NOT classify contacts (identity is ambiguous).
         """
         time_sec = frame_idx / self.fps
         self._total_frames += 1
 
-        # Update previous centroids so velocity is correct on SEPARATE resume
+        # Update velocity EMA so it doesn't spike when exiting MERGED state
+        alpha = self._vel_alpha
+        for si in range(self.num_slots):
+            curr = slot_centroids[si]
+            prev = self._prev_centroids.get(si)
+            if curr is not None and prev is not None:
+                dx = curr[0] - prev[0]
+                dy = curr[1] - prev[1]
+                raw_speed = math.sqrt(dx * dx + dy * dy)
+                if si in self._vel_ema:
+                    self._vel_ema[si] = self._vel_ema[si] * (1 - alpha) + raw_speed * alpha
+                    old_vx, old_vy = self._vel_vec_ema[si]
+                    self._vel_vec_ema[si] = (
+                        old_vx * (1 - alpha) + dx * alpha,
+                        old_vy * (1 - alpha) + dy * alpha,
+                    )
+                else:
+                    self._vel_ema[si] = raw_speed
+                    self._vel_vec_ema[si] = (dx, dy)
+
+        # Update previous centroids
         for si in range(self.num_slots):
             self._prev_centroids[si] = slot_centroids[si]
 

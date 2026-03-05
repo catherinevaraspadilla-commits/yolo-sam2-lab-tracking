@@ -190,11 +190,11 @@ are selected by score only — no IoU comparison needed.
 - [x] Train YOLO26 pose model on the same rat dataset
 - [x] Monitor training loss curves
 - [x] Validate on held-out set
-- [x] Export best weights to `models/yolo/modelyolo26.pt`
+- [x] Export best weights to `models/yolo/best.pt`
 
 ### Phase 3: Integrate -- DONE (2026-03-03)
 
-- [x] Update all 6 config files: `yolo_path: models/yolo/modelyolo26.pt`
+- [x] Update all 12 config files: `yolo_path: models/yolo/best.pt`
 - [x] Add config comment noting `nms_iou` has no effect with YOLO26
 - [ ] Run pipeline on test clip -- verify no crashes
 - [ ] Check logs: track IDs, detection counts, frame processing
