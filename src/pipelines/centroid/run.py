@@ -94,67 +94,6 @@ def _segment_from_centroids(predictor, frame_rgb, centroids, sam_threshold):
     return masks, scores
 
 
-def _segment_from_boxes_with_keypoints(
-    predictor, frame_rgb, detections, centroids, sam_threshold, kpt_min_conf=0.3,
-):
-    """Segment using YOLO boxes + keypoints + negative points.
-
-    Used when rats are close — box prompts give SAM2 spatial extent,
-    this rat's keypoints as positive prompts anchor the mask, and the
-    other rat's centroid + keypoints as negative prompts exclude the neighbor.
-    """
-    predictor.set_image(frame_rgb)
-    masks, scores = [], []
-    for i, det in enumerate(detections):
-        box = np.array([det.x1, det.y1, det.x2, det.y2])
-        # Positive points = this rat's high-confidence keypoints
-        pos = []
-        if det.keypoints:
-            for kp in det.keypoints:
-                if kp.conf >= kpt_min_conf:
-                    pos.append([kp.x, kp.y])
-        # Negative points = other rats' centroids + keypoints
-        neg = []
-        for j in range(len(centroids)):
-            if j == i:
-                continue
-            if centroids[j] is not None:
-                neg.append([centroids[j][0], centroids[j][1]])
-            if j < len(detections) and detections[j].keypoints:
-                for kp in detections[j].keypoints:
-                    if kp.conf >= kpt_min_conf:
-                        neg.append([kp.x, kp.y])
-        all_points = pos + neg
-        all_labels = [1] * len(pos) + [0] * len(neg)
-        if all_points:
-            raw, sc, _ = predictor.predict(
-                point_coords=np.array(all_points, dtype=np.float32),
-                point_labels=np.array(all_labels, dtype=np.int32),
-                box=box, multimask_output=False,
-            )
-        else:
-            raw, sc, _ = predictor.predict(
-                point_coords=None, point_labels=None,
-                box=box, multimask_output=False,
-            )
-        masks.append(raw[0] > sam_threshold)
-        scores.append(float(sc[0]))
-    return masks, scores
-
-
-def _centroids_are_close(centroids, threshold_px=100.0):
-    """Check if any pair of centroids is closer than threshold."""
-    for i in range(len(centroids)):
-        for j in range(i + 1, len(centroids)):
-            ci, cj = centroids[i], centroids[j]
-            if ci is None or cj is None:
-                continue
-            dist = ((ci[0] - cj[0]) ** 2 + (ci[1] - cj[1]) ** 2) ** 0.5
-            if dist < threshold_px:
-                return True
-    return False
-
-
 # ---------------------------------------------------------------------------
 # Keypoint assignment and carry-over
 # ---------------------------------------------------------------------------
@@ -386,9 +325,6 @@ def run_pipeline(
     nms_iou = det_cfg.get("nms_iou")
     sam_thr = config.get("segmentation", {}).get("sam_threshold", 0.0)
 
-    # Proximity threshold: when centroids are closer than this, use YOLO boxes for SAM2
-    proximity_thr = config.get("segmentation", {}).get("box_prompt_proximity_px", 100.0)
-
     colors_raw = config.get("output", {}).get("overlay_colors")
     colors = [tuple(c) for c in colors_raw] if colors_raw else None
     max_frames = config.get("scan", {}).get("max_frames")
@@ -471,24 +407,12 @@ def run_pipeline(
             )
 
             # ----------------------------------------------------------
-            # Step 1b: SAM2 segmentation — hybrid prompting
+            # Step 1b: SAM2 segmentation — centroid prompts always
             # ----------------------------------------------------------
-            # When centroids are close → use YOLO boxes + negative points
-            # When centroids are far  → use centroid points + negative points
-            close = _centroids_are_close(prev_centroids, threshold_px=proximity_thr)
-            yolo_for_sam = detections[:max_animals] if close and len(detections) >= max_animals else None
-
-            if yolo_for_sam is not None:
-                masks, scores = _segment_from_boxes_with_keypoints(
-                    sam, frame_rgb, yolo_for_sam, prev_centroids, sam_thr,
-                    kpt_min_conf=kpt_min_conf,
-                )
-                prompt_mode = "BOX"
-            else:
-                masks, scores = _segment_from_centroids(
-                    sam, frame_rgb, prev_centroids, sam_thr,
-                )
-                prompt_mode = "CENTROID"
+            masks, scores = _segment_from_centroids(
+                sam, frame_rgb, prev_centroids, sam_thr,
+            )
+            prompt_mode = "CENTROID"
 
             # Update centroids from new masks
             new_centroids = []
