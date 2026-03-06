@@ -46,6 +46,7 @@ detection:
 # --- Segmentation (SAM2) ---
 segmentation:
   sam_threshold: 0.0
+  box_prompt_proximity_px: 100.0  # switch to YOLO box prompts when centroids closer than this
 
 # --- Social contact classification ---
 contacts:

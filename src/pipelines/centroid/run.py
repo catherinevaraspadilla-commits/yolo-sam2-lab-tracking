@@ -39,7 +39,7 @@ from src.common.contacts import ContactTracker
 from src.common.io_video import (
     open_video_reader, get_video_properties, create_video_writer, iter_frames,
 )
-from src.common.metrics import compute_centroid, mask_iou as compute_mask_iou
+from src.common.metrics import compute_centroid
 from src.common.geometry import euclidean_distance
 from src.common.visualization import (
     apply_masks_overlay, draw_centroids, draw_keypoints, draw_text,
@@ -86,11 +86,73 @@ def _segment_from_centroids(predictor, frame_rgb, centroids, sam_threshold):
         raw, sc, _ = predictor.predict(
             point_coords=np.array(all_points, dtype=np.float32),
             point_labels=np.array(all_labels, dtype=np.int32),
-            box=None, multimask_output=False,
+            box=None, multimask_output=True,
         )
+        best_idx = int(np.argmax(sc))
+        masks.append(raw[best_idx] > sam_threshold)
+        scores.append(float(sc[best_idx]))
+    return masks, scores
+
+
+def _segment_from_boxes_with_keypoints(
+    predictor, frame_rgb, detections, centroids, sam_threshold, kpt_min_conf=0.3,
+):
+    """Segment using YOLO boxes + keypoints + negative points.
+
+    Used when rats are close — box prompts give SAM2 spatial extent,
+    this rat's keypoints as positive prompts anchor the mask, and the
+    other rat's centroid + keypoints as negative prompts exclude the neighbor.
+    """
+    predictor.set_image(frame_rgb)
+    masks, scores = [], []
+    for i, det in enumerate(detections):
+        box = np.array([det.x1, det.y1, det.x2, det.y2])
+        # Positive points = this rat's high-confidence keypoints
+        pos = []
+        if det.keypoints:
+            for kp in det.keypoints:
+                if kp.conf >= kpt_min_conf:
+                    pos.append([kp.x, kp.y])
+        # Negative points = other rats' centroids + keypoints
+        neg = []
+        for j in range(len(centroids)):
+            if j == i:
+                continue
+            if centroids[j] is not None:
+                neg.append([centroids[j][0], centroids[j][1]])
+            if j < len(detections) and detections[j].keypoints:
+                for kp in detections[j].keypoints:
+                    if kp.conf >= kpt_min_conf:
+                        neg.append([kp.x, kp.y])
+        all_points = pos + neg
+        all_labels = [1] * len(pos) + [0] * len(neg)
+        if all_points:
+            raw, sc, _ = predictor.predict(
+                point_coords=np.array(all_points, dtype=np.float32),
+                point_labels=np.array(all_labels, dtype=np.int32),
+                box=box, multimask_output=False,
+            )
+        else:
+            raw, sc, _ = predictor.predict(
+                point_coords=None, point_labels=None,
+                box=box, multimask_output=False,
+            )
         masks.append(raw[0] > sam_threshold)
         scores.append(float(sc[0]))
     return masks, scores
+
+
+def _centroids_are_close(centroids, threshold_px=100.0):
+    """Check if any pair of centroids is closer than threshold."""
+    for i in range(len(centroids)):
+        for j in range(i + 1, len(centroids)):
+            ci, cj = centroids[i], centroids[j]
+            if ci is None or cj is None:
+                continue
+            dist = ((ci[0] - cj[0]) ** 2 + (ci[1] - cj[1]) ** 2) ** 0.5
+            if dist < threshold_px:
+                return True
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -199,6 +261,66 @@ def _carry_over_keypoints(
     return slot_dets
 
 
+def _stabilize_keypoints(
+    slot_dets, slot_masks, prev_slot_dets, prev_centroids, curr_centroids,
+    ema_alpha=0.5,
+):
+    """Anchor keypoints to SAM2 masks with EMA smoothing.
+
+    YOLO keypoints jump frame-to-frame because each detection is independent.
+    SAM2 masks are much more stable (centroid propagation). This function
+    makes keypoints follow the mask instead of YOLO:
+
+    - Keypoint INSIDE mask  → EMA blend with previous position (smooth)
+    - Keypoint OUTSIDE mask → use previous position + centroid delta (reject YOLO)
+
+    ema_alpha: weight for current YOLO position (0=pure tracking, 1=pure YOLO).
+    """
+    if prev_slot_dets is None:
+        return slot_dets
+
+    for i, det in enumerate(slot_dets):
+        if det is None or not det.keypoints:
+            continue
+        mask = slot_masks[i]
+        if mask is None:
+            continue
+
+        prev_det = prev_slot_dets[i] if i < len(prev_slot_dets) else None
+        if prev_det is None or not prev_det.keypoints:
+            continue
+
+        # Centroid delta for shifting previous positions
+        dx, dy = 0.0, 0.0
+        if (prev_centroids and curr_centroids
+                and prev_centroids[i] is not None
+                and curr_centroids[i] is not None):
+            dx = curr_centroids[i][0] - prev_centroids[i][0]
+            dy = curr_centroids[i][1] - prev_centroids[i][1]
+
+        h, w = mask.shape
+        for k, kp in enumerate(det.keypoints):
+            if k >= len(prev_det.keypoints):
+                break
+            prev_kp = prev_det.keypoints[k]
+            shifted_x = prev_kp.x + dx
+            shifted_y = prev_kp.y + dy
+
+            ix, iy = int(round(kp.x)), int(round(kp.y))
+            inside = 0 <= iy < h and 0 <= ix < w and mask[iy, ix]
+
+            if inside:
+                # EMA smooth: blend YOLO with previous shifted position
+                kp.x = ema_alpha * kp.x + (1 - ema_alpha) * shifted_x
+                kp.y = ema_alpha * kp.y + (1 - ema_alpha) * shifted_y
+            else:
+                # Outside mask → reject YOLO, use mask-tracked position
+                kp.x = shifted_x
+                kp.y = shifted_y
+
+    return slot_dets
+
+
 # ---------------------------------------------------------------------------
 # Main pipeline
 # ---------------------------------------------------------------------------
@@ -264,6 +386,9 @@ def run_pipeline(
     nms_iou = det_cfg.get("nms_iou")
     sam_thr = config.get("segmentation", {}).get("sam_threshold", 0.0)
 
+    # Proximity threshold: when centroids are closer than this, use YOLO boxes for SAM2
+    proximity_thr = config.get("segmentation", {}).get("box_prompt_proximity_px", 100.0)
+
     colors_raw = config.get("output", {}).get("overlay_colors")
     colors = [tuple(c) for c in colors_raw] if colors_raw else None
     max_frames = config.get("scan", {}).get("max_frames")
@@ -304,7 +429,6 @@ def run_pipeline(
         slot_dets: List[Optional["Detection"]] = [None] * max_animals
         mode = "none"
         has_carry_over = False
-        identity_ambiguous = False
 
         # ------------------------------------------------------------------
         # Step 1: SAM2 masks (centroid propagation or YOLO init)
@@ -337,10 +461,34 @@ def run_pipeline(
             else:
                 mode = f"WAITING ({len(detections)}/{max_animals} det)"
         else:
-            # Centroid propagation — no YOLO for masks
-            masks, scores = _segment_from_centroids(
-                sam, frame_rgb, prev_centroids, sam_thr,
+            # ----------------------------------------------------------
+            # Step 1a: YOLO detection (every frame — for keypoints + boxes)
+            # ----------------------------------------------------------
+            detections = detect_only(
+                yolo, frame_rgb, det_conf,
+                keypoint_names=kpt_names, filter_class=filter_class,
+                nms_iou=nms_iou,
             )
+
+            # ----------------------------------------------------------
+            # Step 1b: SAM2 segmentation — hybrid prompting
+            # ----------------------------------------------------------
+            # When centroids are close → use YOLO boxes + negative points
+            # When centroids are far  → use centroid points + negative points
+            close = _centroids_are_close(prev_centroids, threshold_px=proximity_thr)
+            yolo_for_sam = detections[:max_animals] if close and len(detections) >= max_animals else None
+
+            if yolo_for_sam is not None:
+                masks, scores = _segment_from_boxes_with_keypoints(
+                    sam, frame_rgb, yolo_for_sam, prev_centroids, sam_thr,
+                    kpt_min_conf=kpt_min_conf,
+                )
+                prompt_mode = "BOX"
+            else:
+                masks, scores = _segment_from_centroids(
+                    sam, frame_rgb, prev_centroids, sam_thr,
+                )
+                prompt_mode = "CENTROID"
 
             # Update centroids from new masks
             new_centroids = []
@@ -360,16 +508,7 @@ def run_pipeline(
             resolve_overlaps(slot_masks, slot_centroids)
 
             # ----------------------------------------------------------
-            # Step 2: YOLO on full image — keypoints only
-            # ----------------------------------------------------------
-            detections = detect_only(
-                yolo, frame_rgb, det_conf,
-                keypoint_names=kpt_names, filter_class=filter_class,
-                nms_iou=nms_iou,
-            )
-
-            # ----------------------------------------------------------
-            # Step 3: Assign keypoints to masks by spatial overlap
+            # Step 2: Assign keypoints to masks by spatial overlap
             # ----------------------------------------------------------
             valid_masks = [m for m in slot_masks if m is not None]
             valid_centroids = [c for c in slot_centroids if c is not None]
@@ -379,11 +518,20 @@ def run_pipeline(
                 )
 
             # ----------------------------------------------------------
-            # Step 4: Temporal carry-over for missing keypoints
+            # Step 3: Temporal carry-over for missing keypoints
             # ----------------------------------------------------------
             slot_dets = _carry_over_keypoints(
                 slot_dets, prev_slot_dets, prev_centroids, new_centroids,
             )
+
+            # ----------------------------------------------------------
+            # Step 3b: Stabilize keypoints against SAM2 masks
+            # ----------------------------------------------------------
+            slot_dets = _stabilize_keypoints(
+                slot_dets, slot_masks, prev_slot_dets,
+                prev_centroids, new_centroids,
+            )
+
             n_fresh = sum(1 for d in slot_dets if d is not None and id(d) in {id(x) for x in detections})
             n_total = sum(1 for d in slot_dets if d is not None)
             has_carry_over = n_total > n_fresh
@@ -391,41 +539,18 @@ def run_pipeline(
             if has_carry_over:
                 carried_count += 1
 
-            # ----------------------------------------------------------
-            # Step 4b: Lightweight merge detection (no IdentityMatcher)
-            # ----------------------------------------------------------
-            # If masks overlap heavily, identity is ambiguous — skip contact
-            # classification and write a merged placeholder instead.
-            merge_iou_thr = config.get("contacts", {}).get("mask_overlap_warning", 0.5)
-            identity_ambiguous = False
-            active_mask_pairs = [
-                (i, j)
-                for i in range(max_animals) for j in range(i + 1, max_animals)
-                if slot_masks[i] is not None and slot_masks[j] is not None
-            ]
-            for i, j in active_mask_pairs:
-                if compute_mask_iou(slot_masks[i], slot_masks[j]) > merge_iou_thr:
-                    identity_ambiguous = True
-                    break
-
             prev_centroids = new_centroids
             prev_slot_dets = list(slot_dets)
-            mode = f"CENTROID ({len(detections)} YOLO det, {n_fresh} assigned, {n_total - n_fresh} carried)"
-            if identity_ambiguous:
-                mode += " [AMBIGUOUS]"
+            mode = f"{prompt_mode} ({len(detections)} det, {n_fresh} assigned, {n_total - n_fresh} carried)"
 
         # ------------------------------------------------------------------
-        # Step 5: Contact classification (if enabled)
+        # Step 4: Contact classification (if enabled)
         # ------------------------------------------------------------------
         contact_events = []
         if contact_tracker is not None and initialized:
-            if identity_ambiguous:
-                # Masks heavily overlapping — identity uncertain, skip classification
-                contact_tracker.write_merged_placeholder(slot_centroids, frame_idx)
-            else:
-                contact_events = contact_tracker.update(
-                    slot_dets, slot_masks, slot_centroids, frame_idx,
-                )
+            contact_events = contact_tracker.update(
+                slot_dets, slot_masks, slot_centroids, frame_idx,
+            )
 
         # ------------------------------------------------------------------
         # Step 6: Render overlay
