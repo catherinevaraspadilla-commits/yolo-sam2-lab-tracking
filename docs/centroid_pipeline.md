@@ -28,13 +28,10 @@ Frame 0 (initialization):
 Frame 1..N (steady state):
   ┌─────────────────────────────────────────────────────────────────┐
   │ 1. YOLO detect (every frame)                                   │
-  │    → boxes + 7 keypoints per rat                               │
+  │    → 7 keypoints per rat (boxes ignored after init)            │
   │                                                                │
-  │ 2. SAM2 segment (hybrid prompting)                             │
-  │    IF centroids FAR (>100px):                                  │
-  │       centroid prompts + negative points → multimask → best    │
-  │    IF centroids CLOSE (<100px):                                │
-  │       YOLO box + keypoints(+) + other keypoints(-) → mask     │
+  │ 2. SAM2 segment (centroid prompts always)                      │
+  │    centroid(+) + other centroid(-) → multimask → best score    │
   │                                                                │
   │ 3. Compute centroids from masks                                │
   │ 4. Resolve overlapping pixels (nearest centroid)               │
@@ -60,13 +57,11 @@ detections = detect_only(yolo, frame_rgb, confidence=0.25)
 - Returns bounding boxes + 7 keypoints per rat
 - **No tracking** (no BoT-SORT) — independent detection per frame
 - Keypoints: `tail_tip`, `tail_base`, `tail_start`, `mid_body`, `nose`, `right_ear`, `left_ear`
-- Used for: (a) keypoints for contacts, (b) boxes for SAM2 when rats are close
+- Used for: keypoints for contact classification (boxes ignored after init)
 
-### Step 2: SAM2 Segmentation (Hybrid Prompting)
+### Step 2: SAM2 Segmentation (Centroid Prompts)
 
-The pipeline dynamically switches prompting strategy based on how close the rats are:
-
-#### When rats are FAR apart (centroid distance > 100px)
+Every frame uses the same prompting strategy — centroid points with positive/negative labels:
 
 ```python
 SAM2.predict(
@@ -80,37 +75,18 @@ SAM2.predict(
 - Previous frame's centroid as positive prompt ("segment here")
 - Other rat's centroid as negative prompt ("NOT here")
 - `multimask_output=True` generates 3 candidate masks; best selected by confidence
-- Works well because the points are spatially separated
+- Works at all distances — negative prompts help SAM2 distinguish rats even when close
+- `resolve_overlaps` handles any remaining mask bleeding between rats
 
-#### When rats are CLOSE (centroid distance < 100px)
+#### Why centroid prompts only (no YOLO box prompts)?
 
-```python
-SAM2.predict(
-    point_coords = [
-        [this_kp_nose], [this_kp_ear], ...,     # positive: this rat's keypoints
-        [other_centroid], [other_kp_nose], ...,  # negative: other rat's points
-    ],
-    point_labels = [1, 1, ..., 0, 0, ...],
-    box = [x1, y1, x2, y2],                     # YOLO box for THIS rat
-    multimask_output = False,
-)
-```
+An earlier version switched to YOLO box prompts when rats were close. This caused
+**identity swaps** because YOLO detection order is arbitrary — detection[0] might be
+either rat. When unordered YOLO boxes were fed as SAM2 prompts, the wrong box went
+to the wrong slot, swapping masks and propagating the swap permanently.
 
-- **Box prompt**: YOLO bounding box gives SAM2 the spatial extent
-- **Positive points**: this rat's high-confidence keypoints (nose, ears, body)
-- **Negative points**: other rat's centroid + keypoints
-- Up to 14 prompt points (7 keypoints x 2 rats) guide SAM2
-- YOLO detects each rat separately even during close interaction
-
-#### Why hybrid prompting?
-
-| Situation | Centroid prompts only | Hybrid (box + keypoints) |
-|-----------|----------------------|--------------------------|
-| Rats far apart | Clean separation | Unnecessary overhead |
-| Rats close/touching | **One mask absorbs both** | Both rats get separate masks |
-| Rats overlapping | **Complete mask loss** | Box constrains each mask |
-
-The `box_prompt_proximity_px` threshold (default 100px, ~1 body length) controls the switch.
+SAM2 centroid prompts are inherently slot-stable: each slot's centroid propagates
+from the previous frame, so identity is never disrupted by YOLO ordering.
 
 ### Step 3: Centroid Update
 
@@ -250,7 +226,6 @@ detection:
 # --- SAM2 Segmentation ---
 segmentation:
   sam_threshold: 0.0              # mask binarization threshold
-  box_prompt_proximity_px: 100.0  # switch to box prompts when closer than this
 
 # --- Contact Classification ---
 contacts:
@@ -357,10 +332,11 @@ YOLO keypoints jitter 5-15px frame-to-frame because each detection is independen
 SAM2 masks move smoothly. The EMA stabilization makes keypoints follow the mask
 while still updating from YOLO when the detection lands inside the mask.
 
-### Why hybrid prompting instead of always using boxes
-Box prompts require YOLO to detect both rats. When rats are far apart, centroid
-prompts work perfectly and don't depend on YOLO detection quality.
-Box prompts are only needed when centroids are too close for point-only prompts.
+### Why centroid prompts always (no YOLO box prompts)
+An earlier version switched to YOLO box prompts when rats were close (<100px).
+This caused identity swaps because YOLO detection order is arbitrary — the wrong
+box would go to the wrong slot, swapping masks permanently. SAM2 centroid prompts
+with positive/negative labels + `resolve_overlaps` handle all distances reliably.
 
 ### Why no IdentityMatcher
 The reference pipeline used a Hungarian assignment + SEPARATE/MERGED state machine.
