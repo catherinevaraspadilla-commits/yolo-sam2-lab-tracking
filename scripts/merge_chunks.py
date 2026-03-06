@@ -98,15 +98,15 @@ def merge_overlay_videos(chunk_dirs: List[Path], output_dir: Path) -> Path | Non
         logger.warning("No overlay videos found to merge")
         return None
 
+    # Always use _merged suffix so run_parallel.sh can find the video
+    ext = video_paths[0].suffix
+    base_name = video_paths[0].stem
+
     if len(video_paths) == 1:
-        out_path = output_dir / "overlays" / video_paths[0].name
+        out_path = output_dir / "overlays" / f"{base_name}_merged{ext}"
         out_path.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(video_paths[0], out_path)
         return out_path
-
-    # Try ffmpeg concat — use same name as chunk video but with _merged suffix
-    ext = video_paths[0].suffix
-    base_name = video_paths[0].stem  # e.g. "reference_sam2.1_hiera_large_2026-02-27"
     out_path = output_dir / "overlays" / f"{base_name}_merged{ext}"
     out_path.parent.mkdir(parents=True, exist_ok=True)
 

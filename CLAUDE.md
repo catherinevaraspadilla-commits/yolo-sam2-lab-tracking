@@ -9,11 +9,16 @@ Runs locally (short clips) and on UQ Bunya HPC (full videos, multi-GPU parallel)
 
 **Centroid pipeline** (`src/pipelines/centroid/`) — production default.
 - SAM2 centroid propagation drives masks and identity (YOLO only on init frame)
+- SAM2 uses centroid prompts ALWAYS (positive + negative points, no YOLO box prompts)
 - YOLO demoted to keypoint-only provider on full image
 - Keypoints assigned to masks by spatial overlap (not YOLO box ordering)
 - Temporal carry-over fills missing keypoints using centroid delta
-- Lightweight merge detection (mask IoU > 0.5 → merged placeholder)
 - No IdentityMatcher — identity inherent from SAM2 propagation
+
+**CRITICAL: Do NOT reintroduce YOLO box prompts for SAM2.**
+YOLO detection order is arbitrary and causes identity swaps when used as SAM2 prompts.
+SAM2 centroid-only prompting was validated swap-free. See `docs/centroid_pipeline.md`
+"Lessons Learned" section for full analysis.
 
 All other pipelines (reference, sam3, sam2_yolo, sam2_video) are in `src/pipelines/deprecated/`.
 

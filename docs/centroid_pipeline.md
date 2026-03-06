@@ -342,3 +342,49 @@ with positive/negative labels + `resolve_overlaps` handle all distances reliably
 The reference pipeline used a Hungarian assignment + SEPARATE/MERGED state machine.
 The centroid pipeline doesn't need this because SAM2 propagation inherently maintains
 identity. Removing it simplifies the code and eliminates a class of identity swap bugs.
+
+---
+
+## Lessons Learned — Identity Swap Prevention
+
+This section documents the root causes of identity swaps we identified and fixed.
+**Do not reintroduce YOLO box prompts or YOLO-ordered inputs to SAM2.**
+
+### Key insight: SAM2 alone tracks identity perfectly
+
+SAM2 centroid propagation (positive + negative point prompts) maintains stable identity
+across all distances, including close interactions. This was validated by running SAM2
+with centroid prompts only — no swaps occurred. The swaps were always introduced by
+YOLO interfering with SAM2's prompting.
+
+### Root cause: YOLO detection order is arbitrary
+
+YOLO runs independently each frame with no tracking. The order of `detections[]` is
+arbitrary — detection[0] might be rat A in one frame and rat B in the next. This is
+fine when YOLO is only used for keypoints (assigned to masks by spatial overlap). But
+it becomes catastrophic when YOLO ordering touches SAM2 identity:
+
+| What went wrong | How it caused swaps |
+|----------------|-------------------|
+| YOLO boxes as SAM2 prompts (box prompt path) | Wrong box → wrong slot → mask swap → permanent |
+| YOLO detection order assumed to match slots | detection[0] might be slot 1's rat |
+| Switching prompting strategy based on proximity | Transition itself could introduce swap |
+
+### What is safe (YOLO does NOT touch identity)
+
+- YOLO keypoints assigned to SAM2 masks by spatial overlap (`_assign_keypoints_to_masks`)
+- Temporal carry-over using centroid delta (not YOLO ordering)
+- Keypoint stabilization against masks (EMA smoothing)
+- Contact classification using slot-assigned keypoints
+
+### What is NOT safe (never do these)
+
+- Using YOLO boxes as SAM2 box prompts (detection order is random)
+- Using YOLO detection index to determine slot assignment for SAM2
+- Any path where YOLO ordering influences which mask goes to which slot
+- Switching between prompting strategies mid-video (transition = swap risk)
+
+### Design rule
+
+**SAM2 centroid prompts are the sole source of identity.** YOLO provides keypoints only.
+YOLO outputs must never be used in a way that can reorder, swap, or override SAM2 slots.
