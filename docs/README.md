@@ -1,78 +1,78 @@
 # Documentation Index
 
+## Core
+
+| Document | Description |
+|----------|-------------|
+| [Centroid Pipeline](centroid_pipeline.md) | **Main reference** — architecture, findings, contact research, test checklist, rules |
+
 ## Setup
 
 | Document | Description |
 |----------|-------------|
 | [Local Setup](setup/local.md) | Prerequisites, venv, quick tests |
-| [HPC Setup (Bunya)](setup/hpc.md) | Cluster setup, salloc, parallel runs, file transfer, troubleshooting |
+| [HPC Setup (Bunya)](setup/hpc.md) | Cluster setup, salloc, parallel runs, file transfer |
 
 ## Architecture
 
 | Document | Description |
 |----------|-------------|
 | [Overview](architecture/overview.md) | Project purpose, models, success criteria |
-| [Pipeline Comparison](architecture/pipelines.md) | sam2_yolo vs sam2_video vs reference vs centroid vs sam3 — flow, tracking, recommendation |
-| [Risks & Limitations](architecture/risks.md) | Known failure modes, workarounds, and risk priorities |
-| [Identity Matcher](architecture/identity_matcher.md) | Hungarian matching + SEPARATE/MERGED state machine design |
-| [Tracking Analysis](architecture/tracking_analysis.md) | BoT-SORT and ByteTrack parameter deep-dive |
-| [Pipeline Improvements](architecture/pipeline_improvements.md) | sam2_yolo pipeline design, BoT-SORT config, debug signals |
-| [Reference Comparison](architecture/reference_comparison.md) | What we adopted/rejected from the reference toolkit |
+| [Pipeline Comparison](architecture/pipelines.md) | All pipelines compared (centroid is production) |
+| [Risks & Limitations](architecture/risks.md) | Known failure modes and workarounds |
+| [Reference Comparison](architecture/reference_comparison.md) | What we adopted/rejected from reference toolkit |
 
 ## Guides
 
 | Document | Description |
 |----------|-------------|
-| [Parameter Tuning](guides/parameter_tuning.md) | Config reference with tuning guidance and problem-solution mapping |
-| [Labeling](guides/labeling.md) | Minimum viable labels, hard cases, Roboflow workflow |
-| [Evaluation](guides/evaluation.md) | Qualitative checks, quantitative metrics, comparison framework |
-| [Debugging](guides/debugging.md) | YOLO-only and SAM2-only debug scripts to isolate pipeline problems |
-
-## Models
-
-| Document | Description |
-|----------|-------------|
-| [YOLO26 Migration](models/yolo26_migration.md) | Migration from YOLOv8 to YOLO26 — changes, retraining, NMS-free impact |
+| [Parameter Tuning](guides/parameter_tuning.md) | Config reference with tuning guidance |
+| [Labeling](guides/labeling.md) | Minimum viable labels, Roboflow workflow |
+| [Evaluation](guides/evaluation.md) | Qualitative checks, quantitative metrics |
+| [Debugging](guides/debugging.md) | Debug scripts to isolate pipeline problems |
 
 ## Contacts
 
 | Document | Description |
 |----------|-------------|
-| [Contact Design](contacts/design.md) | 6 contact types (N2N, N2AG, N2B, T2T, FOL, SBS) + NC, detection rules |
-| [Output Format](contacts/output_format.md) | CSV columns, bout format, session JSON, PDF report |
-| [System Audit](contacts/audit.md) | Full audit: pipeline integration, bugs, risks, parameter sensitivity |
-| [Threshold Research](contacts/threshold_research.md) | Literature review: minimum bout durations for rat social behavior |
-| [Post-Processing](../docs/contacts_postprocess_simple.md) | 3-rule temporal filtering pipeline (smoothing, gap-bridging, min-bout) |
+| [Contact Design](contacts/design.md) | 6 contact types, detection rules |
+| [Output Format](contacts/output_format.md) | CSV columns, bout format, session JSON |
+| [System Audit](contacts/audit.md) | Full audit: bugs, risks, parameters |
+| [Threshold Research](contacts/threshold_research.md) | Literature review: minimum bout durations |
+| [Post-Processing](contacts_postprocess_simple.md) | 3-rule temporal filtering pipeline |
+
+## Models
+
+| Document | Description |
+|----------|-------------|
+| [YOLO26 Migration](models/yolo26_migration.md) | Migration from YOLOv8 to YOLO26 |
 
 ## Data
 
 | Document | Description |
 |----------|-------------|
-| [Data Notes](data/notes.md) | Input format, execution modes, domain gap, key challenges |
-| [Output Structure](data/output_structure.md) | Run directories, chunk outputs, merged results, contact files |
+| [Data Notes](data/notes.md) | Input format, domain gap, key challenges |
+| [Output Structure](data/output_structure.md) | Run directories, chunk outputs, merged results |
 
 ## Research
 
 | Document | Description |
 |----------|-------------|
-| [YOLO Limitations](research/yolo_research.md) | Why YOLO fails on identical animals, potato demo comparison, literature review |
-| [Centroid Pipeline Plan](../docs/plans/centroid_pipeline.md) | Design plan for SAM2 centroid propagation pipeline |
+| [YOLO Limitations](research/yolo_research.md) | Why YOLO fails on identical animals |
 
-## Findings
-
-| Document | Description |
-|----------|-------------|
-| [Debug Findings](findings.md) | Experimental results from debug scripts — YOLO vs SAM2 root cause analysis |
-
-## Changes (Observation Tracking)
+## Changes
 
 | Document | Description |
 |----------|-------------|
-| [Observation Log](changes/observation_log.md) | Chronological log of video observations, problems, and fixes |
-| [Pipeline Comparison](changes/pipeline_comparison.md) | Side-by-side comparison of pipeline runs on the same video |
+| [Observation Log](changes/observation_log.md) | Chronological log of observations and fixes |
+| [Pipeline Comparison](changes/pipeline_comparison.md) | Side-by-side pipeline comparison template |
 
-## Archive
+## Archive (Deprecated)
 
 | Document | Description |
 |----------|-------------|
-| [Refactoring Plan](archive/refactoring_plan.md) | Historical record of the initial codebase restructuring |
+| [Identity Matcher](archive/identity_matcher.md) | Hungarian matching + SEPARATE/MERGED (reference pipeline) |
+| [Tracking Analysis](archive/tracking_analysis.md) | BoT-SORT/ByteTrack parameters (sam2_yolo) |
+| [Pipeline Improvements](archive/pipeline_improvements.md) | sam2_yolo pipeline design |
+| [Centroid Pipeline Plan](archive/centroid_pipeline.md) | Original design plan (executed) |
+| [Refactoring Plan](archive/refactoring_plan.md) | Historical codebase restructuring |

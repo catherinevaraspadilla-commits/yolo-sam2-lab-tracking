@@ -1,279 +1,275 @@
 # Centroid Pipeline — Technical Documentation
 
 > Production pipeline for laboratory rat tracking and social contact classification.
-> YOLO26 + SAM2 hybrid architecture with mask-anchored keypoints.
+> SAM2 centroid propagation (identity) + YOLO keypoints (read-only, for contacts).
 
 ---
 
 ## Overview
 
-The centroid pipeline tracks 2 laboratory rats in video using two AI models:
+Tracks 2 laboratory rats in video using:
 
 | Model | Role |
 |-------|------|
-| **YOLO26** | Detects each rat: bounding box + 7 anatomical keypoints |
-| **SAM2** | Segments each rat: pixel-precise mask (silhouette) |
+| **YOLO26** | Frame 0: bounding boxes for init. Every frame: keypoints for contacts (read-only) |
+| **SAM2** | Segments each rat every frame (pixel-precise mask via centroid propagation) |
 
-**Key principle**: SAM2 masks are the backbone — they drive identity and spatial tracking.
-YOLO provides anatomical detail (keypoints) but its positions are stabilized against the masks.
+**Key principle**: SAM2 masks are the sole source of identity. YOLO provides keypoints as a read-only overlay — it never influences SAM2 prompting.
 
 ---
 
-## Architecture Diagram
+## Architecture
 
 ```
 Frame 0 (initialization):
   YOLO detect → 2 boxes → SAM2 segment (box prompts) → 2 masks → centroids
 
 Frame 1..N (steady state):
-  ┌─────────────────────────────────────────────────────────────────┐
-  │ 1. YOLO detect (every frame)                                   │
-  │    → 7 keypoints per rat (boxes ignored after init)            │
-  │                                                                │
-  │ 2. SAM2 segment (centroid prompts always)                      │
-  │    centroid(+) + other centroid(-) → multimask → best score    │
-  │                                                                │
-  │ 3. Compute centroids from masks                                │
-  │ 4. Resolve overlapping pixels (nearest centroid)               │
-  │ 5. Assign YOLO keypoints to masks (spatial overlap)            │
-  │ 6. Carry-over missing keypoints (centroid delta shift)         │
-  │ 7. Stabilize keypoints against masks (EMA smoothing)           │
-  │ 8. Contact classification (6 types)                            │
-  │ 9. Render overlay video                                        │
-  └─────────────────────────────────────────────────────────────────┘
+  For each rat:
+    SAM2.predict(
+      point_coords = [[this_centroid], [other_centroid]],
+      point_labels = [1, 0],         # positive, negative
+      box = None,
+      multimask_output = False,      # CRITICAL: must be False
+    )
+  → compute centroids from new masks
+  → resolve_overlaps for contested pixels
+
+  YOLO detect → keypoints (read-only, detection order irrelevant)
+  → assign keypoints to masks by containment
+  → carry-over missing keypoints from previous frame
+  → ContactTracker.update() for social contacts
+  → render overlay
 ```
 
 ---
 
-## Processing Steps (Detail)
+## How It Works
 
-### Step 1: YOLO Detection
+### Step 1: YOLO Initialization (frame 0 only)
 
 ```python
 detections = detect_only(yolo, frame_rgb, confidence=0.25)
+masks, scores = _segment_from_boxes(sam, frame_rgb, detections, threshold)
+centroids = [compute_centroid(m) for m in masks]
 ```
 
-- Runs every frame on the full image
-- Returns bounding boxes + 7 keypoints per rat
-- **No tracking** (no BoT-SORT) — independent detection per frame
-- Keypoints: `tail_tip`, `tail_base`, `tail_start`, `mid_body`, `nose`, `right_ear`, `left_ear`
-- Used for: keypoints for contact classification (boxes ignored after init)
+- Runs once to get initial bounding boxes
+- SAM2 segments each box → 2 masks
+- Centroids computed from masks
+- YOLO never runs again after this
 
-### Step 2: SAM2 Segmentation (Centroid Prompts)
-
-Every frame uses the same prompting strategy — centroid points with positive/negative labels:
+### Step 2: SAM2 Centroid Propagation (every frame after init)
 
 ```python
-SAM2.predict(
-    point_coords = [[this_centroid], [other_centroid]],
-    point_labels = [1, 0],           # positive, negative
-    box = None,
-    multimask_output = True,         # 3 candidates → pick best score
-)
+masks, scores = _segment_from_centroids(sam, frame_rgb, prev_centroids, threshold)
 ```
 
-- Previous frame's centroid as positive prompt ("segment here")
-- Other rat's centroid as negative prompt ("NOT here")
-- `multimask_output=True` generates 3 candidate masks; best selected by confidence
-- Works at all distances — negative prompts help SAM2 distinguish rats even when close
-- `resolve_overlaps` handles any remaining mask bleeding between rats
+- Previous frame's centroid as **positive prompt** ("segment here")
+- Other rat's centroid as **negative prompt** ("NOT here")
+- `multimask_output=False` → single direct mask (no candidate selection)
+- Centroids update from new masks; if mask empty, keep previous centroid
 
-#### Why centroid prompts only (no YOLO box prompts)?
-
-An earlier version switched to YOLO box prompts when rats were close. This caused
-**identity swaps** because YOLO detection order is arbitrary — detection[0] might be
-either rat. When unordered YOLO boxes were fed as SAM2 prompts, the wrong box went
-to the wrong slot, swapping masks and propagating the swap permanently.
-
-SAM2 centroid prompts are inherently slot-stable: each slot's centroid propagates
-from the previous frame, so identity is never disrupted by YOLO ordering.
-
-### Step 3: Centroid Update
-
-```python
-centroid = compute_centroid(mask)  # center of mass of mask pixels
-```
-
-- Each mask produces a centroid (center of mass)
-- If a mask is empty → keep previous frame's centroid (prevents drift)
-- Centroids are the "identity anchor" — they propagate frame to frame
-
-### Step 4: Overlap Resolution
+### Step 3: Overlap Resolution
 
 ```python
 resolve_overlaps(slot_masks, slot_centroids)
 ```
 
-- When two masks share pixels, each contested pixel goes to the nearest centroid
-- Modifies masks in-place
+- When two masks share pixels, each contested pixel goes to nearest centroid
 - Ensures no pixel belongs to both rats
 
-### Step 5: Keypoint Assignment
+---
 
-```python
-slot_dets = _assign_keypoints_to_masks(detections, slot_masks, slot_centroids)
-```
+## Validated Findings
 
-Two-pass assignment:
-1. **Containment**: YOLO detection center inside a mask → assign to that mask's slot
-2. **Fallback**: nearest centroid within 200px
+### Finding 1: `multimask_output=False` is critical
 
-This decouples YOLO detection order from identity — the mask determines which rat gets which keypoints.
+| Setting | Result |
+|---------|--------|
+| `multimask_output=True` (3 candidates, pick best score) | **Poor tracking** — masks degrade, identity unstable |
+| `multimask_output=False` (1 direct mask) | **Stable tracking** — masks clean, identity maintained |
 
-### Step 6: Temporal Carry-Over
+Why True fails: the "best score" candidate is not the best for temporal consistency. The score reflects single-frame quality, not tracking continuity. Masks jump between interpretations frame-to-frame.
 
-```python
-slot_dets = _carry_over_keypoints(slot_dets, prev_slot_dets, prev_centroids, new_centroids)
-```
+**Rule: Always use `multimask_output=False`. Do not change this.**
 
-- If YOLO misses a rat (no detection), copy previous frame's keypoints
-- Shift positions by centroid delta: `new_pos = old_pos + (curr_centroid - prev_centroid)`
-- Marked with `is_carried_over=True` → contacts get `quality_flag="stale_keypoints"`
+### Finding 2: YOLO every frame destroys identity
 
-### Step 7: Keypoint Stabilization (Mask-Anchored)
+| Approach | Result |
+|----------|--------|
+| YOLO every frame → boxes as SAM2 prompts | **Identity swaps** — permanent, unrecoverable |
+| YOLO init only → SAM2 centroid propagation | **Best results** — stable identity throughout |
 
-```python
-slot_dets = _stabilize_keypoints(slot_dets, slot_masks, prev_slot_dets, prev_centroids, new_centroids)
-```
+Why: YOLO detection order is arbitrary (no tracking memory). `detection[0]` might be either rat. When used as SAM2 prompts, wrong box → wrong slot → permanent swap.
 
-**Problem**: YOLO detects each frame independently → keypoints jump frame-to-frame.
-SAM2 masks are much more stable (centroid propagation).
+**Rule: YOLO runs ONLY on frame 0. Never after.**
 
-**Solution**: Anchor keypoints to the mask:
+### Finding 3: SAM2 centroid propagation maintains identity
 
-| Keypoint position | Action |
-|-------------------|--------|
-| **Inside** mask | EMA smooth: `pos = 0.5 * yolo + 0.5 * (prev + delta)` |
-| **Outside** mask | Reject YOLO, use: `pos = prev + centroid_delta` |
+Validated on 3600 frames (120s video): only 1 blink in entire video.
 
-The EMA alpha (0.5) balances reactivity vs smoothness:
-- Higher (→1.0) = more YOLO influence, faster reaction, more jitter
-- Lower (→0.0) = more mask tracking, smoother, slower to react
+What it handles well:
+- Rats crossing paths
+- Prolonged close interactions (negative prompts keep masks separate)
+- Rapid posture changes
+- Temporary occlusion
 
-### Step 8: Contact Classification
+### Finding 4: Reference pipeline problems (why we switched)
 
-```python
-contact_events = contact_tracker.update(slot_dets, slot_masks, slot_centroids, frame_idx)
-```
+The reference pipeline (YOLO every frame + IdentityMatcher) had 4 failure modes:
 
-6 social contact types with body-length normalized thresholds:
+1. **Mask bleeding** — overlapping YOLO boxes → SAM2 segments both rats as one blob
+2. **ID swaps** — IdentityMatcher MERGED state timeout → wrong assignment
+3. **Rat disappears** — YOLO intermittent detection → missing masks for 10-50+ frames
+4. **Flickering** — YOLO detection count fluctuates between 1 and 2 every frame
 
-| Code | Contact Type | Detection Method |
-|------|-------------|------------------|
-| N2N | Nose-to-nose | Both noses within contact zone |
-| N2AG | Nose-to-anogenital | Nose near other's tail base |
-| T2T | Tail-to-tail | Both tail tips close |
-| N2B | Nose-to-body | Nose near other's mid-body |
-| FOL | Following | One rat trails another (speed + alignment) |
-| SBS | Side-by-side | Parallel movement with mask overlap |
-
-Contacts always run (no merge detection skip) — this is critical because social contacts
-happen precisely when rats are close, which is when previous pipelines would skip analysis.
-
-### Step 9: Video Overlay
-
-Each frame renders:
-- Semi-transparent masks (green = rat 0, red = rat 1)
-- Keypoint dots on each rat
-- Centroid markers
-- Yellow line between centroids during active contacts
-- Status bar: `Animals: 2/2 | Centroid | BOX (2 det, 2 assigned, 0 carried) | N2N`
+All traced to YOLO's per-frame instability. SAM2 centroid propagation eliminates all 4.
 
 ---
 
-## Identity Management
+## What Was Removed and Why
 
-**No IdentityMatcher needed.** Identity is inherent from SAM2 centroid propagation:
-
-- Frame 0: slot 0 = first YOLO detection (green), slot 1 = second (red)
-- Frame 1+: each slot's centroid propagates → same mask region → same identity
-- Keypoints are assigned to masks, not to YOLO detection order
-
-This eliminates the complex SEPARATE/MERGED state machine from the reference pipeline.
+| Removed Feature | Why |
+|----------------|-----|
+| YOLO box prompts after init | Caused identity swaps via YOLO ordering |
+| `multimask_output=True` | Degraded tracking quality |
+| YOLO every-frame detection | Unnecessary — SAM2 alone tracks better |
+| IdentityMatcher (Hungarian assignment) | SAM2 propagation inherently maintains identity |
+| SEPARATE/MERGED state machine | No longer needed |
+| Keypoint assignment/stabilization | Removed with YOLO (to be re-added for contacts) |
 
 ---
 
-## Configuration Reference
+## Contact Detection (Approach A — IMPLEMENTED, TESTING)
+
+**Status: Implemented, awaiting test results to evaluate.**
+
+YOLO runs every frame as a read-only keypoint provider. SAM2 prompting is untouched.
+
+```
+Frame N:
+  1. SAM2 centroid propagation → 2 masks (identity preserved, untouched)
+  2. YOLO detect → keypoints (detection order irrelevant)
+  3. Assign keypoints to masks by containment (box center inside mask)
+  4. Carry-over missing keypoints from previous frame (shifted by centroid delta)
+  5. ContactTracker.update(slot_dets, masks, centroids)
+```
+
+**Why it should be safe**: YOLO never touches SAM2 prompting. YOLO is a read-only consumer of SAM2 identity. The previous swaps came from YOLO *boxes* as SAM2 prompts, not from keypoint extraction.
+
+**Risk to SAM2**: LOW — YOLO ordering never influences identity.
+
+### What to watch for during testing
+
+1. **Identity swaps** — Do the masks (green/red) ever swap between rats? If yes, SAM2 prompting is somehow affected (should NOT happen with this approach)
+2. **Keypoint assignment errors** — Are keypoints from rat A appearing on rat B's mask? Check during close interactions when YOLO boxes overlap
+3. **Carried-over keypoint quality** — When YOLO misses a rat, carried-over keypoints shift by centroid delta. Are they accurate enough for contacts?
+4. **Contact classification accuracy** — Are N2N, N2AG, etc. firing at the right moments? Are there false positives or missed contacts?
+5. **Performance** — Does YOLO running every frame slow things down significantly on HPC?
+6. **Carry-over percentage** — Log shows `Frames with keypoint carry-over: X/Y (Z%)`. High % means YOLO is missing rats often
+
+### If Approach A fails
+
+If identity swaps appear → something is wrong in the implementation (debug).
+If keypoints are too unreliable during interactions → try **Approach B** (mask geometry).
+If YOLO is too slow → consider running YOLO every N frames instead of every frame.
+
+### Approach B: Mask Geometry (Skeleton-Free)
+
+Use SAM2 mask shape to infer body parts without any pose model:
+- Medial axis transform → skeleton of mask shape
+- PCA orientation → head-tail direction
+- Extremity detection → narrower end = head
+
+Paper: [Self-Supervised Body Part Segmentation for Rats](https://arxiv.org/abs/2405.04650)
+
+**Risk to SAM2**: NONE (purely post-processing on masks)
+**Limitation**: Less precise than keypoints, struggles with curled postures
+
+### Approach C: DeepLabCut / SLEAP
+
+Replace YOLO with dedicated pose estimation ([DeepLabCut](https://github.com/DeepLabCut/DeepLabCut), [SLEAP](https://sleap.ai/)). Requires training data.
+
+**Risk to SAM2**: NONE (separate model)
+**When to use**: If YOLO keypoints are consistently bad
+
+### Approach D: SAM2 Multi-Prompt Body Parts — NOT RECOMMENDED
+
+Multiple SAM2 prompts per rat for body parts. **Risk: HIGH** — could interfere with centroid propagation.
+
+### What ContactTracker Needs
+
+| Contact | Keypoints Required | Masks Required |
+|---------|-------------------|----------------|
+| N2N | nose (both rats) | No |
+| N2AG | nose + tail_base | No |
+| T2T | tail_base (both) | No |
+| FOL | nose + tail_base + velocity | No |
+| SBS | (optional: orientation) | YES (mask IoU) |
+| N2B | nose | YES (containment) |
+
+7 keypoints: tail_tip, tail_base, tail_start, mid_body, nose, right_ear, left_ear
+
+---
+
+## Configuration
 
 ```yaml
-# --- Input ---
 video_path: data/clips/output-10s.mp4
 output_dir: outputs/runs
 
-# --- Models ---
 models:
   yolo_path: models/yolo/best.pt
-  sam2_checkpoint: models/sam2/.../sam2.1_hiera_tiny.pt  # tiny=local, large=HPC
+  sam2_checkpoint: models/sam2/.../sam2.1_hiera_tiny.pt
   sam2_config: configs/sam2.1/sam2.1_hiera_t.yaml
-  device: auto                    # auto, cuda, cpu
+  device: auto
 
-# --- YOLO Detection ---
 detection:
-  confidence: 0.25                # detection confidence threshold
-  max_animals: 2                  # number of animals to track
-  keypoint_names:                 # 7 anatomical landmarks
-    - tail_tip
-    - tail_base
-    - tail_start
-    - mid_body
-    - nose
-    - right_ear
-    - left_ear
-  keypoint_min_conf: 0.3          # minimum keypoint confidence
-  filter_class: null              # filter by class (null = all)
-  nms_iou: 0.5                   # NMS threshold (no-op with YOLO26)
+  confidence: 0.25
+  max_animals: 2
+  keypoint_names: [tail_tip, tail_base, tail_start, mid_body, nose, right_ear, left_ear]
+  keypoint_min_conf: 0.3
 
-# --- SAM2 Segmentation ---
 segmentation:
-  sam_threshold: 0.0              # mask binarization threshold
+  sam_threshold: 0.0
 
-# --- Contact Classification ---
 contacts:
-  enabled: false                  # enable with contacts.enabled=true
-  min_keypoint_conf: 0.3          # keypoint confidence for contacts
-  contact_zone_bl: 0.3            # contact zone in body lengths
-  proximity_zone_bl: 1.0          # proximity zone in body lengths
-  fallback_body_length_px: 120    # body length estimate in pixels
-  sbs_mask_iou_min: 0.02          # side-by-side mask overlap threshold
-  sbs_max_velocity_bl: 0.04       # max velocity for SBS (BL/frame)
-  sbs_parallel_cos_min: 0.7       # cosine similarity for parallel movement
-  follow_radius_bl: 0.5           # following detection radius
-  follow_min_speed_bl: 0.025      # minimum speed for following
-  follow_alignment_cos: 0.7       # alignment threshold for following
-  follow_min_frames: 30           # minimum frames for following bout
-  bout_max_gap_frames: 3          # max gap to bridge between bouts
-  bout_min_duration_frames: 9     # minimum bout duration
-  mask_overlap_warning: 0.5       # warn if masks overlap this much
-  det_slot_match_radius: 200.0    # max distance for keypoint assignment
+  enabled: false
+  min_keypoint_conf: 0.3
+  contact_zone_bl: 0.3
+  proximity_zone_bl: 1.0
+  fallback_body_length_px: 120
+  sbs_mask_iou_min: 0.02
+  sbs_max_velocity_bl: 0.04
+  sbs_parallel_cos_min: 0.7
+  follow_radius_bl: 0.5
+  follow_min_speed_bl: 0.025
+  follow_alignment_cos: 0.7
+  follow_min_frames: 30
+  bout_max_gap_frames: 3
+  bout_min_duration_frames: 9
+  mask_overlap_warning: 0.5
+  det_slot_match_radius: 200.0
 
-# --- Output ---
 output:
   video_codec: XVID
   overlay_colors:
-    - [0, 255, 0, 150]            # Rat 0: Green
-    - [255, 0, 0, 150]            # Rat 1: Red
+    - [0, 255, 0, 150]    # Rat 0: Green
+    - [255, 0, 0, 150]    # Rat 1: Red
 
-# --- Limits ---
 scan:
-  max_frames: null                # null = process entire video
+  max_frames: null
 ```
 
 ---
 
 ## Running
 
-### Local (short clips)
+### Local
 
 ```bash
-# Without contacts
 python -m src.pipelines.centroid.run --config configs/local_centroid.yaml
-
-# With contacts
-python -m src.pipelines.centroid.run --config configs/local_centroid.yaml contacts.enabled=true
-
-# Custom video
-python -m src.pipelines.centroid.run --config configs/local_centroid.yaml \
-    video_path=data/clips/my_video.mp4 contacts.enabled=true
 ```
 
 ### HPC (Bunya — multi-GPU parallel)
@@ -285,106 +281,70 @@ git pull
 module load python/3.10.4-gcccore-11.3.0
 source .venv/bin/activate
 
-# Request 3 GPUs
 salloc --partition=gpu_cuda --qos=gpu --gres=gpu:3 --cpus-per-task=8 --mem=64G --time=24:00:00
 srun --pty bash
 
-# Run (splits video into 3 chunks, 1 per GPU, merges at end)
 bash scripts/run_parallel.sh data/raw/original_120s.avi
 ```
 
-Results are saved to `outputs/runs/<timestamp>_centroid_merged/` and the script prints
-an `scp` command for downloading.
-
 ---
 
-## Output Files
+## Output
 
 ```
 outputs/runs/<timestamp>_centroid/
 ├── overlays/
-│   └── centroid_2026-03-06.avi      # Overlay video with masks + keypoints
+│   └── centroid_2026-03-07.avi      # Overlay video with masks + centroids
 ├── contacts/                         # (only if contacts.enabled=true)
-│   ├── contacts_raw.csv              # Per-frame raw contact classifications
-│   ├── contacts_real_events.csv      # Filtered event table
-│   ├── session_summary_real.json     # Summary statistics
-│   ├── event_log.txt                 # Chronological event log
-│   ├── contacts_timeline.png         # Timeline chart
-│   └── contacts_report.tar.gz       # All contact files compressed
+│   ├── contacts_raw.csv
+│   ├── contacts_real_events.csv
+│   ├── session_summary_real.json
+│   ├── event_log.txt
+│   ├── contacts_timeline.png
+│   └── contacts_report.tar.gz
 └── logs/
-    └── run.log                       # Full pipeline log
+    └── run.log
 ```
 
 ---
 
-## Key Design Decisions
+## Test Checklist
 
-### Why SAM2 drives identity (not YOLO)
-YOLO detects independently each frame — detection order can flip randomly.
-SAM2 centroid propagation is stable: the same mask region stays in the same slot.
+### Test 1: Rats far apart
+- [ ] Both masks clean, separate
+- [ ] Status bar shows `CENTROID`
 
-### Why YOLO runs every frame (not just init)
-YOLO provides anatomical keypoints (nose, ears, tail) needed for contact classification.
-Without keypoints, we can't distinguish N2N from N2AG.
+### Test 2: Rats approaching
+- [ ] Masks remain separate
 
-### Why keypoints are stabilized against masks
-YOLO keypoints jitter 5-15px frame-to-frame because each detection is independent.
-SAM2 masks move smoothly. The EMA stabilization makes keypoints follow the mask
-while still updating from YOLO when the detection lands inside the mask.
+### Test 3: Rats interacting (touching/overlapping)
+- [ ] Both rats have masks (resolve_overlaps handles bleeding)
+- [ ] **No identity swap** (same color stays on same rat)
 
-### Why centroid prompts always (no YOLO box prompts)
-An earlier version switched to YOLO box prompts when rats were close (<100px).
-This caused identity swaps because YOLO detection order is arbitrary — the wrong
-box would go to the wrong slot, swapping masks permanently. SAM2 centroid prompts
-with positive/negative labels + `resolve_overlaps` handle all distances reliably.
+### Test 4: Rats separating after interaction
+- [ ] Masks recover cleanly
+- [ ] No identity swap
 
-### Why no IdentityMatcher
-The reference pipeline used a Hungarian assignment + SEPARATE/MERGED state machine.
-The centroid pipeline doesn't need this because SAM2 propagation inherently maintains
-identity. Removing it simplifies the code and eliminates a class of identity swap bugs.
+### Test 5: Full video (120s)
+- [ ] Pipeline completes without crash
+- [ ] Overlay video shows masks on both rats at all times
 
 ---
 
-## Lessons Learned — Identity Swap Prevention
+## Rules for Future Development
 
-This section documents the root causes of identity swaps we identified and fixed.
-**Do not reintroduce YOLO box prompts or YOLO-ordered inputs to SAM2.**
+1. **Never use `multimask_output=True`** for centroid propagation
+2. **Never use YOLO boxes as SAM2 prompts** after initialization
+3. **Never let YOLO detection order influence SAM2 identity**
+4. **SAM2 centroid prompts are the sole source of identity**
+5. Any additions (keypoints, contacts) must work *on top of* SAM2 masks without modifying SAM2 prompting
 
-### Key insight: SAM2 alone tracks identity perfectly
+---
 
-SAM2 centroid propagation (positive + negative point prompts) maintains stable identity
-across all distances, including close interactions. This was validated by running SAM2
-with centroid prompts only — no swaps occurred. The swaps were always introduced by
-YOLO interfering with SAM2's prompting.
+## Research Sources
 
-### Root cause: YOLO detection order is arbitrary
-
-YOLO runs independently each frame with no tracking. The order of `detections[]` is
-arbitrary — detection[0] might be rat A in one frame and rat B in the next. This is
-fine when YOLO is only used for keypoints (assigned to masks by spatial overlap). But
-it becomes catastrophic when YOLO ordering touches SAM2 identity:
-
-| What went wrong | How it caused swaps |
-|----------------|-------------------|
-| YOLO boxes as SAM2 prompts (box prompt path) | Wrong box → wrong slot → mask swap → permanent |
-| YOLO detection order assumed to match slots | detection[0] might be slot 1's rat |
-| Switching prompting strategy based on proximity | Transition itself could introduce swap |
-
-### What is safe (YOLO does NOT touch identity)
-
-- YOLO keypoints assigned to SAM2 masks by spatial overlap (`_assign_keypoints_to_masks`)
-- Temporal carry-over using centroid delta (not YOLO ordering)
-- Keypoint stabilization against masks (EMA smoothing)
-- Contact classification using slot-assigned keypoints
-
-### What is NOT safe (never do these)
-
-- Using YOLO boxes as SAM2 box prompts (detection order is random)
-- Using YOLO detection index to determine slot assignment for SAM2
-- Any path where YOLO ordering influences which mask goes to which slot
-- Switching between prompting strategies mid-video (transition = swap risk)
-
-### Design rule
-
-**SAM2 centroid prompts are the sole source of identity.** YOLO provides keypoints only.
-YOLO outputs must never be used in a way that can reorder, swap, or override SAM2 slots.
+- [Self-Supervised Body Part Segmentation for Rats](https://arxiv.org/abs/2405.04650)
+- [Multi-animal pose estimation with DeepLabCut](https://www.nature.com/articles/s41592-022-01443-0)
+- [SLEAP: Multi-animal pose tracking](https://www.nature.com/articles/s41592-022-01426-1)
+- [Multi-animal 3D social pose estimation](https://www.nature.com/articles/s42256-023-00776-5)
+- [SAM2MOT: Multi-Object Tracking by Segmentation](https://arxiv.org/html/2504.04519v1)
